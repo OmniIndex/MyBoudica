@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<info xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:noNamespaceSchemaLocation="https://apps.nextcloud.com/schema/apps/info.xsd">
+    <id>boudicacode</id>
+    <name>Boudica Code</name>
+    <summary>In-browser code editor with project file management and AI chat, backed by your Nextcloud files.</summary>
+    <description><![CDATA[
+Boudica Code is a standalone Nextcloud app providing a VS Code-style
+three-pane workspace: a Monaco-based text editor, a file/project tree
+backed by WebDAV, and a chat panel for issuing commands (create file,
+open file, run task, etc.) to the Boudica backend.
+    ]]></description>
+    <version>0.4.2</version>
+    <licence>agpl</licence>
+    <author>You</author>
+    <namespace>BoudicaCode</namespace>
+    <category>tools</category>
+    <bugs>https://github.com/yourorg/boudica-code/issues</bugs>
+
+    <dependencies>
+        <nextcloud min-version="27" max-version="34"/>
+    </dependencies>
+
+    <navigations>
+        <navigation>
+            <name>Boudica Code</name>
+            <route>boudicacode.page.index</route>
+            <icon>app.svg</icon>
+            <order>10</order>
+        </navigation>
+    </navigations>
+</info>

@@ -1,0 +1,895 @@
+/* Boudica Code — three-pane layout. Plain CSS, no framework. */
+
+html, body {
+    height: 100%;
+}
+
+/* Themed text selection and keyboard focus — applied globally so every
+   interactive element (buttons, tree items, tabs, form fields) gets a
+   consistent, visible focus ring for free, without repeating it on every
+   selector. :focus-visible (not :focus) so mouse clicks don't show a ring
+   that's only meant for keyboard/assistive-tech navigation. */
+#boudica-code-root ::selection {
+    background: var(--color-primary-element, #0082c9);
+    color: #fff;
+}
+
+#boudica-code-root button:focus-visible,
+#boudica-code-root [tabindex]:focus-visible,
+#boudica-code-root input:focus-visible,
+#boudica-code-root textarea:focus-visible,
+#boudica-code-root select:focus-visible {
+    outline: 2px solid var(--color-primary-element, #0082c9);
+    outline-offset: 1px;
+}
+
+/* Snappy, short transitions on the interactive surfaces below — long
+   enough to read as intentional feedback, short enough to still feel
+   immediate for a dev tool (not a marketing page). */
+#boudica-code-root button,
+#boudica-code-root .bc-file-tree__item,
+#boudica-code-root .bc-file-tree__crumb,
+#boudica-code-root .bc-editor-tab,
+#boudica-code-root .bc-context-menu__item {
+    transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #boudica-code-root * {
+        transition-duration: 0.001ms !important;
+        animation-duration: 0.001ms !important;
+    }
+}
+
+#app-content {
+    height: 100%;
+    display: block; /* override any conflicting Nextcloud default */
+}
+
+#boudica-code-root {
+    height: calc(100vh - 50px); /* account for Nextcloud top bar; adjust as needed */
+    display: flex !important;
+    flex-direction: column !important;
+}
+
+/* --- Project bar (switcher) --- */
+
+.bc-projectbar {
+    position: relative;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    padding: 4px 8px;
+    background: linear-gradient(to bottom, var(--color-background-hover, #ececec), var(--color-background-dark, #e2e2e2));
+    border-bottom: 1px solid var(--color-border, #444);
+}
+
+.bc-projectbar__current {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--color-main-text, #333);
+    cursor: pointer;
+}
+
+.bc-projectbar__current:hover {
+    background: rgba(0, 0, 0, 0.08);
+    border-color: var(--color-border, #ccc);
+}
+
+.bc-projectbar__chevron {
+    font-size: 10px;
+    opacity: 0.7;
+}
+
+.bc-projectbar__dropdown {
+    position: absolute;
+    top: calc(100% + 2px);
+    left: 8px;
+    z-index: 9000;
+    min-width: 220px;
+    max-height: 320px;
+    overflow-y: auto;
+    margin: 0;
+    padding: 4px;
+    list-style: none;
+    background: var(--color-main-background, #fff);
+    color: var(--color-main-text, #222);
+    border: 1px solid var(--color-border, #444);
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+    animation: bc-message-in 0.1s ease-out;
+}
+
+.bc-projectbar__item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 6px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: background-color 0.12s ease;
+}
+
+.bc-projectbar__item:hover,
+.bc-projectbar__item:focus-visible {
+    background: var(--color-primary-element-light, rgba(0, 130, 201, 0.15));
+}
+
+.bc-projectbar__item.is-current {
+    font-weight: 700;
+    color: var(--color-primary-element, #0082c9);
+}
+
+.bc-projectbar__item--home {
+    font-weight: 600;
+}
+
+.bc-projectbar__item-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.bc-projectbar__item-stack {
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--color-text-maxcontrast, #767676);
+}
+
+.bc-projectbar__empty {
+    padding: 10px;
+    font-size: 12px;
+    color: var(--color-text-maxcontrast, #767676);
+    cursor: default;
+}
+
+.bc-projectbar__sep {
+    height: 1px;
+    margin: 4px 6px;
+    background: var(--color-border, #ddd);
+}
+
+.bc-layout {
+    display: grid !important;
+    grid-template-columns: var(--bc-files-width, 220px) 1fr 6px var(--bc-chat-width, 320px) !important;
+    grid-template-rows: 1fr !important;
+    flex: 1 1 auto;
+    min-height: 0; /* allow children to scroll instead of overflowing */
+    width: 100%;
+}
+
+/* Drag handle between the editor and chat panel (see main.js's wireChatResizer). */
+.bc-resizer {
+    cursor: col-resize;
+    background: var(--color-border, #444);
+    position: relative;
+}
+
+.bc-resizer::after {
+    /* Widen the actual hit area beyond the visible 6px line, without
+       widening the grid column itself. */
+    content: '';
+    position: absolute;
+    inset: 0 -3px;
+}
+
+.bc-resizer:hover,
+.bc-resizer.is-dragging {
+    background: var(--color-primary-element, #0082c9);
+}
+
+.bc-panel {
+    min-height: 0;
+    min-width: 0;
+    height: 100%;
+    overflow: auto;
+    border-right: 1px solid var(--color-border, #444);
+    box-sizing: border-box;
+}
+
+.bc-panel--files {
+    background: var(--color-background-hover, #f5f5f5);
+}
+
+.bc-panel--editor {
+    background: #1e1e1e; /* matches Monaco's vs-dark theme so there's no flash-of-white before it loads */
+}
+
+.bc-panel--chat {
+    background: var(--color-main-background, #ffffff);
+    border-right: none; /* last column — no divider needed against the browser edge */
+    display: flex;
+    flex-direction: column;
+}
+
+/* --- File tree --- */
+
+.bc-file-tree {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.bc-file-tree__toolbar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 8px;
+    /* Slightly different from the panel body so this reads as a distinct
+       toolbar strip, like a desktop app's — not just more list content. */
+    background: linear-gradient(to bottom, var(--color-background-hover, #ececec), var(--color-background-dark, #e2e2e2));
+    border-bottom: 1px solid var(--color-border, #444);
+    box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.4);
+}
+
+.bc-file-tree__toolbar button {
+    font-size: 12px;
+    padding: 4px 8px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--color-main-text, #333);
+    cursor: pointer;
+    line-height: 1.4;
+}
+
+.bc-file-tree__toolbar button:hover {
+    background: rgba(0, 0, 0, 0.08);
+    border-color: var(--color-border, #ccc);
+}
+
+.bc-file-tree__toolbar button:active {
+    background: rgba(0, 0, 0, 0.16);
+}
+
+.bc-file-tree__toolbar [data-action="collapse"] {
+    font-weight: 700;
+    margin-right: 2px;
+    padding: 4px 7px;
+}
+
+/* Collapsed: keep just the toolbar strip (with its expand toggle) visible; hide everything else. */
+.bc-file-tree--collapsed .bc-file-tree__breadcrumb,
+.bc-file-tree--collapsed .bc-file-tree__list,
+.bc-file-tree--collapsed .bc-file-tree__toolbar button:not([data-action="collapse"]) {
+    display: none;
+}
+
+.bc-file-tree--collapsed .bc-file-tree__toolbar {
+    flex-direction: column;
+    justify-content: flex-start;
+}
+
+.bc-file-tree__breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px 6px;
+    font-size: 11px;
+    color: var(--color-text-maxcontrast, #767676);
+    border-bottom: 1px solid var(--color-border, #444);
+    overflow-x: auto;
+    white-space: nowrap;
+}
+
+.bc-file-tree__crumb {
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+
+.bc-file-tree__crumb:hover {
+    background: var(--color-background-hover, rgba(0, 0, 0, 0.08));
+    text-decoration: none;
+}
+
+/* The way back to the project root — made obviously clickable so people
+   don't have to guess that the leading "/" is the "go up" control. */
+.bc-file-tree__crumb--root {
+    font-weight: 700;
+    background: var(--color-primary-element-light, rgba(0, 130, 201, 0.15));
+    color: var(--color-primary-element, #0082c9);
+}
+
+.bc-file-tree__crumb--root:hover {
+    background: var(--color-primary-element-light, rgba(0, 130, 201, 0.28));
+}
+
+.bc-file-tree__crumb-sep {
+    opacity: 0.6;
+}
+
+.bc-file-tree__list {
+    list-style: none;
+    margin: 0;
+    padding: 4px;
+    overflow-y: auto;
+    flex: 1;
+}
+
+.bc-file-tree__item {
+    padding: 3px 6px;
+    cursor: pointer;
+    white-space: nowrap;
+    border-radius: 3px;
+    font-size: 13px;
+}
+
+.bc-file-tree__item:hover {
+    background: var(--color-background-hover, rgba(255, 255, 255, 0.08));
+}
+
+.bc-file-tree__item.is-folder {
+    font-weight: 600;
+}
+
+/* The file currently open in the editor — a "you are here" marker, same
+   idea as most desktop IDEs highlighting the active file in the explorer. */
+.bc-file-tree__item.is-active {
+    background: var(--color-primary-element-light, rgba(0, 130, 201, 0.18));
+    color: var(--color-primary-element, #0082c9);
+    font-weight: 600;
+}
+
+.bc-file-tree__item.is-active:hover {
+    background: var(--color-primary-element-light, rgba(0, 130, 201, 0.26));
+}
+
+.bc-file-tree__empty {
+    padding: 10px 8px;
+    font-size: 12px;
+    color: var(--color-text-maxcontrast, #767676);
+    cursor: default;
+    white-space: normal;
+}
+
+/* --- Editor --- */
+
+.bc-panel--editor {
+    display: flex;
+    height: 100%;
+    padding: 0;
+}
+
+.bc-panel--editor > div {
+    flex: 1 1 auto;
+    height: 100%;
+    width: 100%;
+}
+
+.bc-editor {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    width: 100%;
+}
+
+.bc-editor-tabs {
+    display: flex;
+    flex-shrink: 0;
+    overflow-x: auto;
+    background: #252526;
+    border-bottom: 1px solid var(--color-border, #444);
+    scrollbar-color: #555 #252526; /* Firefox */
+}
+
+.bc-editor-tabs::-webkit-scrollbar {
+    height: 6px;
+}
+
+.bc-editor-tabs::-webkit-scrollbar-track {
+    background: #252526;
+}
+
+.bc-editor-tabs::-webkit-scrollbar-thumb {
+    background: #555;
+    border-radius: 3px;
+}
+
+.bc-editor-tabs::-webkit-scrollbar-thumb:hover {
+    background: #6e6e6e;
+}
+
+.bc-editor-tab {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+    color: #ccc;
+    cursor: pointer;
+    white-space: nowrap;
+    border-right: 1px solid #333;
+    border-top: 2px solid transparent;
+}
+
+.bc-editor-tab:hover {
+    background: #2a2a2a;
+}
+
+.bc-editor-tab.is-active {
+    background: #1e1e1e;
+    color: #fff;
+    border-top-color: var(--color-primary-element, #0082c9);
+}
+
+.bc-editor-tab__close {
+    opacity: 0.6;
+    padding: 0 3px;
+    border-radius: 3px;
+    line-height: 1;
+}
+
+.bc-editor-tab__close:hover {
+    opacity: 1;
+    background: rgba(255, 255, 255, 0.15);
+}
+
+/* Unsaved-changes indicator — a plain dot (not the "●" glyph inline in the
+   label text) so it can be color-coded and doesn't shift when the label
+   text itself changes width. */
+.bc-editor-tab__dirty-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #e8ab2e;
+    flex-shrink: 0;
+}
+
+.bc-editor-toolbar {
+    display: flex;
+    flex-shrink: 0;
+    padding: 4px 8px;
+    background: linear-gradient(to bottom, #2f2f2f, #262626);
+    border-bottom: 1px solid var(--color-border, #444);
+    box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.bc-editor-toolbar button {
+    font-size: 12px;
+    padding: 4px 10px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: #ddd;
+    cursor: pointer;
+}
+
+.bc-editor-toolbar button:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.15);
+}
+
+.bc-editor-toolbar button:active {
+    background: rgba(255, 255, 255, 0.18);
+}
+
+.bc-editor-toolbar [data-action="new-project"] {
+    border-color: rgba(255, 255, 255, 0.2);
+    font-weight: 600;
+}
+
+.bc-editor-body {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.bc-editor-monaco-mount {
+    position: absolute;
+    inset: 0;
+}
+
+.bc-editor-home {
+    position: absolute;
+    inset: 0;
+    overflow-y: auto;
+    display: none;
+    background: #1e1e1e;
+    color: #d4d4d4;
+    padding: 24px 32px 48px;
+    box-sizing: border-box;
+}
+
+/* Readable measure and typography for rendered markdown — a plain
+   reading pane, not a themed page; the content dictates its own
+   headings/emphasis, this just needs to not fight it. */
+.bc-editor-home > * {
+    max-width: 720px;
+}
+
+.bc-editor-home h1,
+.bc-editor-home h2,
+.bc-editor-home h3,
+.bc-editor-home h4,
+.bc-editor-home h5,
+.bc-editor-home h6 {
+    color: #fff;
+    line-height: 1.3;
+    margin: 1.4em 0 0.6em;
+}
+
+.bc-editor-home h1:first-child,
+.bc-editor-home h2:first-child {
+    margin-top: 0;
+}
+
+.bc-editor-home p,
+.bc-editor-home li {
+    line-height: 1.6;
+    font-size: 14px;
+}
+
+.bc-editor-home a {
+    color: #4fa8e0;
+}
+
+.bc-editor-home code {
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    font-size: 0.9em;
+    background: rgba(255, 255, 255, 0.08);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+}
+
+.bc-editor-home pre {
+    background: #141414;
+    border: 1px solid #333;
+    border-radius: 6px;
+    padding: 12px 14px;
+    overflow-x: auto;
+}
+
+.bc-editor-home pre code {
+    background: none;
+    padding: 0;
+}
+
+.bc-editor-home blockquote {
+    margin: 1em 0;
+    padding: 4px 14px;
+    border-left: 3px solid #555;
+    color: #aaa;
+}
+
+.bc-editor-home hr {
+    border: none;
+    border-top: 1px solid #333;
+    margin: 1.6em 0;
+}
+
+.bc-editor-home__status {
+    color: #aaa;
+    font-size: 13px;
+}
+
+.bc-editor-home__status--error {
+    color: #f06464;
+}
+
+.bc-editor-placeholder {
+    color: #888;
+    font-family: monospace;
+    font-size: 13px;
+    padding: 16px;
+}
+
+/* --- Chat --- */
+
+.bc-chat {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.bc-chat__log {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+/* Empty-state hint — pure CSS (:empty), no JS needed to show/hide it. */
+.bc-chat__log:empty::before {
+    content: 'Ask Boudica anything — or try "/new my-app python", "/create src/util.py a csv parser", or just describe what you want built.';
+    display: block;
+    padding: 12px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--color-text-maxcontrast, #767676);
+    font-style: italic;
+}
+
+.bc-chat__message {
+    padding: 6px 10px;
+    border-radius: 8px;
+    font-size: 13px;
+    max-width: 90%;
+    word-wrap: break-word;
+    white-space: pre-wrap;
+    animation: bc-message-in 0.15s ease-out;
+}
+
+@keyframes bc-message-in {
+    from { opacity: 0; transform: translateY(2px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.bc-chat__message--user {
+    align-self: flex-end;
+    background: var(--color-primary-element, #0082c9);
+    color: #fff;
+}
+
+.bc-chat__message--bot {
+    align-self: flex-start;
+    background: var(--color-background-dark, #2a2a2a);
+    color: var(--color-main-text, #eee);
+}
+
+/* Tone-coded outcomes — a left accent stripe + tinted background so
+   success/failure/caution are scannable at a glance in a fast-moving
+   log, not just readable one line at a time. Dark tints (not light
+   pastel washes) so the existing light bot-bubble text stays legible. */
+/* Fixed light text — these three are deliberately theme-INDEPENDENT
+   dark badge colors (status should read the same whether Nextcloud
+   itself is in light or dark mode), so they can't inherit
+   .bc-chat__message--bot's var(--color-main-text): on a light Nextcloud
+   theme that variable resolves to near-black, which is illegible
+   against these backgrounds. */
+.bc-chat__message--success {
+    background: #17301f;
+    border-left: 3px solid #3fb950;
+    color: #e6f2e9;
+}
+
+.bc-chat__message--error {
+    background: #3a1c1c;
+    border-left: 3px solid #f06464;
+    color: #fbe4e4;
+}
+
+.bc-chat__message--warning {
+    background: #3a2f14;
+    border-left: 3px solid #e8ab2e;
+    color: #f8ecd2;
+}
+
+/* An in-progress request ("On it…", "Asking Boudica to write…", etc.) —
+   pulses so a slow response still visibly reads as "working", not stalled.
+   Reduced-motion users get a plain static dim instead of the animation. */
+.bc-chat__message--pending {
+    animation: bc-pulse 1.3s ease-in-out infinite;
+}
+
+@keyframes bc-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.45; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .bc-chat__message--pending {
+        animation: none;
+        opacity: 0.7;
+    }
+}
+
+.bc-chat__form {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px;
+    border-top: 1px solid var(--color-border, #444);
+}
+
+.bc-chat__form textarea {
+    width: 100%;
+    min-height: 72px;
+    max-height: 240px;
+    resize: vertical;
+    font: inherit;
+    line-height: 1.4;
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--color-border, #444);
+    box-sizing: border-box;
+}
+
+.bc-chat__form-actions {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.bc-chat__form-actions button {
+    padding: 6px 16px;
+    border-radius: 4px;
+    border: 1px solid var(--color-border, #444);
+    background: var(--color-primary-element, #0082c9);
+    color: #fff;
+    cursor: pointer;
+}
+
+.bc-chat__form-actions button:hover {
+    filter: brightness(1.08);
+}
+
+/* --- Status bar --- */
+
+.bc-statusbar {
+    height: 22px;
+    line-height: 22px;
+    padding: 0 10px;
+    font-size: 12px;
+    background: var(--color-primary-element, #0082c9);
+    color: #fff;
+    transition: background-color 0.15s ease;
+}
+
+.bc-statusbar--error {
+    background: #a83232;
+}
+
+/* --- Context menu (file tree: cut/copy/paste/delete/download) --- */
+
+.bc-context-menu {
+    position: fixed;
+    z-index: 10000;
+    min-width: 160px;
+    margin: 0;
+    padding: 4px;
+    list-style: none;
+    background: var(--color-main-background, #fff);
+    color: var(--color-main-text, #222);
+    border: 1px solid var(--color-border, #444);
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+    font-size: 13px;
+}
+
+.bc-context-menu__item {
+    padding: 6px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.bc-context-menu__item:hover {
+    background: var(--color-primary-element-light, rgba(0, 130, 201, 0.15));
+}
+
+.bc-context-menu__item.is-disabled {
+    color: var(--color-text-maxcontrast, #999);
+    cursor: default;
+}
+
+.bc-context-menu__sep {
+    height: 1px;
+    margin: 4px 6px;
+    background: var(--color-border, #ddd);
+}
+
+/* --- Modal (New Project dialog) --- */
+
+.bc-modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 10001;
+    background: rgba(0, 0, 0, 0.45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: bc-overlay-in 0.12s ease-out;
+}
+
+.bc-modal {
+    width: 360px;
+    max-width: calc(100vw - 32px);
+    background: var(--color-main-background, #fff);
+    color: var(--color-main-text, #222);
+    border-radius: 8px;
+    padding: 20px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+    animation: bc-modal-in 0.15s ease-out;
+}
+
+@keyframes bc-overlay-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes bc-modal-in {
+    from { opacity: 0; transform: scale(0.97) translateY(4px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.bc-modal h2 {
+    margin: 0 0 14px;
+    font-size: 16px;
+}
+
+.bc-modal__field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 12px;
+    font-size: 13px;
+}
+
+.bc-modal__field input[type='text'],
+.bc-modal__field select {
+    padding: 6px 8px;
+    font: inherit;
+    border: 1px solid var(--color-border, #444);
+    border-radius: 4px;
+    box-sizing: border-box;
+}
+
+.bc-modal__location {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--color-border, #444);
+    border-radius: 4px;
+}
+
+.bc-modal__location span {
+    font-size: 12px;
+    color: var(--color-text-maxcontrast, #767676);
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.bc-modal__location button {
+    flex-shrink: 0;
+    font-size: 12px;
+    padding: 3px 8px;
+}
+
+.bc-modal__error {
+    margin: 0 0 12px;
+    font-size: 12px;
+    color: var(--color-error, #c9251d);
+}
+
+.bc-modal__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.bc-modal__actions button {
+    padding: 6px 14px;
+    border-radius: 4px;
+    border: 1px solid var(--color-border, #444);
+    background: transparent;
+    color: var(--color-main-text, #222);
+    cursor: pointer;
+}
+
+.bc-modal__actions button.is-primary {
+    background: var(--color-primary-element, #0082c9);
+    border-color: transparent;
+    color: #fff;
+}
+
+.bc-modal__actions button.is-primary:hover {
+    filter: brightness(1.08);
+}
+
+.bc-modal__actions button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}

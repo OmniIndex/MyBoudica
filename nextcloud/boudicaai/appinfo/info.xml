@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<info xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	  xsi:noNamespaceSchemaLocation="https://apps.nextcloud.com/schema/apps/info.xsd">
+	<id>boudicaai</id>
+	<name>Boudica AI</name>
+	<summary>This is an integration in to the Boudica AI Models and inference servers</summary>
+	<description><![CDATA["Black-box" cloud AI models lack transparency and force sensitive information into unpredictable, unauditable third-party frameworks. This creates a massive security gap for regulated industries, where the inability to audit or control the data path leads to intellectual property risks and hallucinated "confidently incorrect" answers that cannot be verified against the data. 
+
+ 
+
+Boudica Torc solves this industry wide challenge with truly Sovereign AI.]]></description>
+	<version>1.1.1</version>
+	<licence>MIT</licence>
+	<author mail="sibain@omniindex.io" homepage="https://www.omniindex.io">OmniIndex</author>
+	<namespace>BoudicaAi</namespace>
+	<category>integration</category>
+	<category>office</category>
+	<category>search</category>
+	<category>tools</category>
+	<bugs>https://www.omniindex.io/nextcloud</bugs>
+	<dependencies>
+		<nextcloud min-version="31" max-version="34"/>
+	</dependencies>
+	<navigations>
+		<navigation>
+			<id>boudicaai</id>
+			<name>Boudica AI</name>
+			<route>boudicaai.page.index</route>
+			<icon>app.svg</icon>
+			<type>link</type>
+		</navigation>
+		<navigation>
+			<id>boudicaai_digest</id>
+			<name>Talk Digest</name>
+			<route>boudicaai.digest.index</route>
+			<icon>talk-digest.svg</icon>
+			<type>link</type>
+		</navigation>
+	</navigations>
+	<commands>
+        <command>OCA\BoudicaAi\Command\TranscribeCallsCommand</command>
+        <command>OCA\BoudicaAi\Command\JanusTranscriptionCommand</command>
+	</commands>
+	<background-jobs>
+		<job>OCA\BoudicaAi\BackgroundJob\DigestPollJob</job>
+	</background-jobs>
+</info>

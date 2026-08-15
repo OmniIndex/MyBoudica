@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Boudica Audio Transcription Example</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        .example-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 30px;
+            margin-bottom: 40px;
+        }
+
+        .example-card {
+            background: white;
+            border-radius: 8px;
+            padding: 25px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .example-card h2 {
+            color: #B8860B;
+            font-size: 18px;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #B8860B;
+        }
+
+        .example-code {
+            background: #f9f9f9;
+            border-left: 4px solid #B8860B;
+            padding: 15px;
+            margin: 15px 0;
+            overflow-x: auto;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+
+        .example-code code {
+            font-family: "Courier New", monospace;
+            color: #333;
+        }
+
+        .demo-section {
+            background: white;
+            border-radius: 8px;
+            padding: 25px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .demo-section h2 {
+            color: #B8860B;
+            margin-bottom: 20px;
+        }
+
+        button {
+            background: linear-gradient(135deg, #B8860B 0%, #8b6914 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.2s;
+            margin: 10px 0;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(184, 134, 11, 0.3);
+        }
+
+        #fileUpload {
+            display: none;
+        }
+
+        .file-input-wrapper {
+            display: inline-block;
+        }
+
+        .status-message {
+            margin: 15px 0;
+            padding: 12px;
+            border-radius: 4px;
+            display: none;
+        }
+
+        .status-message.success {
+            background: #e8f5e9;
+            color: #2e7d32;
+            display: block;
+        }
+
+        .status-message.error {
+            background: #ffebee;
+            color: #c62828;
+            display: block;
+        }
+
+        .status-message.info {
+            background: #e3f2fd;
+            color: #1565c0;
+            display: block;
+        }
+
+        .result-box {
+            background: #f9f9f9;
+            border-left: 4px solid #B8860B;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 15px 0;
+            display: none;
+        }
+
+        .result-box.show {
+            display: block;
+        }
+
+        #transcriptResult {
+            white-space: pre-wrap;
+            word-break: break-word;
+            line-height: 1.6;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .btn-group button {
+            flex: 1;
+            margin: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎤 Boudica Audio Transcription Integration</h1>
+
+        <!-- Examples Section -->
+        <div class="example-grid">
+            <!-- Example 1: Simple Standalone UI -->
+            <div class="example-card">
+                <h2>1. Standalone UI Panel</h2>
+                <p>Add the complete audio upload panel to any page:</p>
+                <div class="example-code">
+                    <code>&lt;div id="audioPanel"&gt;&lt;/div&gt;<br>
+&lt;script&gt;<br>
+const audio = new AudioTranscription();<br>
+const ui = new AudioUploadUI('audioPanel', audio);<br>
+&lt;/script&gt;</code>
+                </div>
+                <p style="margin-top: 15px; color: #666; font-size: 13px;">Best for: Dashboard, dedicated transcription page</p>
+            </div>
+
+            <!-- Example 2: Chat Integration -->
+            <div class="example-card">
+                <h2>2. Chat Integration</h2>
+                <p>Add microphone button to chat toolbar:</p>
+                <div class="example-code">
+                    <code>const audio = new AudioTranscription();<br>
+const chatAudio = new ChatWithAudioTranscription<br>
+('chatContainer', audio);</code>
+                </div>
+                <p style="margin-top: 15px; color: #666; font-size: 13px;">Best for: Talk integration, message input</p>
+            </div>
+
+            <!-- Example 3: Programmatic Use -->
+            <div class="example-card">
+                <h2>3. Programmatic Usage</h2>
+                <p>Use the service without UI:</p>
+                <div class="example-code">
+                    <code>const audio = new AudioTranscription();<br>
+const result = await audio.transcribeFile(<br>
+  file, onProgress<br>
+);<br>
+console.log(result.transcript);</code>
+                </div>
+                <p style="margin-top: 15px; color: #666; font-size: 13px;">Best for: Custom integrations, automation</p>
+            </div>
+
+            <!-- Example 4: Talk Bot Command -->
+            <div class="example-card">
+                <h2>4. Talk Bot Integration</h2>
+                <p>Automatic transcription in Talk rooms:</p>
+                <div class="example-code">
+                    <code>@boudica transcribe<br><br>
+Participants notified via email<br>
+with full transcript</code>
+                </div>
+                <p style="margin-top: 15px; color: #666; font-size: 13px;">Best for: Meeting recordings, voice calls</p>
+            </div>
+        </div>
+
+        <!-- Demo Section -->
+        <div class="demo-section">
+            <h2>Live Demo - Try It Now</h2>
+            <p style="margin-bottom: 15px; color: #666;">
+                This demo shows how to programmatically transcribe an audio file and integrate it into your app.
+            </p>
+
+            <div>
+                <div class="file-input-wrapper">
+                    <button onclick="document.getElementById('fileUpload').click();">
+                        Select Audio File
+                    </button>
+                    <input type="file" id="fileUpload" accept=".wav,.mp3,.m4a,.ogg,.flac,.aac,.webm,.opus">
+                </div>
+            </div>
+
+            <div id="selectedFileInfo" style="margin-top: 15px; display: none;">
+                <strong>Selected File:</strong> <span id="fileName"></span>
+                (<span id="fileSize"></span>)
+                <div style="margin-top: 10px;">
+                    <button onclick="startTranscription();">Start Transcription</button>
+                </div>
+            </div>
+
+            <div id="statusMessage" class="status-message"></div>
+
+            <div id="progressDiv" style="display: none; margin-top: 20px;">
+                <div style="background: #e0e0e0; height: 8px; border-radius: 4px; overflow: hidden;">
+                    <div id="progressBar" style="background: linear-gradient(90deg, #B8860B 0%, #d4a017 100%); height: 100%; width: 0%; transition: width 0.3s;"></div>
+                </div>
+                <div id="progressText" style="font-size: 12px; color: #666; margin-top: 8px; text-align: center;">Initializing...</div>
+            </div>
+
+            <div id="resultBox" class="result-box">
+                <h3 style="margin-bottom: 10px; color: #333;">Transcript Result</h3>
+                <div id="transcriptResult" style="margin-bottom: 15px;"></div>
+                <div id="transcriptMeta" style="font-size: 12px; color: #999;"></div>
+                <div class="btn-group">
+                    <button onclick="copyTranscript();">📋 Copy</button>
+                    <button onclick="clearDemo();">Clear</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Setup Guide -->
+        <div class="demo-section" style="margin-top: 30px;">
+            <h2>Installation & Setup</h2>
+
+            <h3 style="color: #333; margin-top: 20px; margin-bottom: 10px;">1. Include Scripts in HTML</h3>
+            <div class="example-code">
+                <code>&lt;script src="js/audio-transcription.js"&gt;&lt;/script&gt;<br>
+&lt;script src="js/audio-upload-ui.js"&gt;&lt;/script&gt;<br>
+&lt;script src="js/chat-audio-integration.js"&gt;&lt;/script&gt;</code>
+            </div>
+
+            <h3 style="color: #333; margin-top: 20px; margin-bottom: 10px;">2. Ensure Whisper Service is Running</h3>
+            <div class="example-code">
+                <code># Check if Whisper container is running<br>
+docker ps | grep whisper<br><br>
+# Or check service health<br>
+curl http://localhost:5000/health</code>
+            </div>
+
+            <h3 style="color: #333; margin-top: 20px; margin-bottom: 10px;">3. Initialize in Your App</h3>
+            <div class="example-code">
+                <code>const audioTranscription = new AudioTranscription();<br><br>
+// Option A: Use pre-built UI<br>
+const ui = new AudioUploadUI('containerID', audioTranscription);<br><br>
+// Option B: Use chat integration<br>
+const chat = new ChatWithAudioTranscription('chatID', audioTranscription);<br><br>
+// Option C: Use programmatically<br>
+const result = await audioTranscription.transcribeFile(file);</code>
+            </div>
+
+            <h3 style="color: #333; margin-top: 20px; margin-bottom: 10px;">4. Supported Audio Formats</h3>
+            <p style="color: #666;">WAV • MP3 • M4A • OGG • FLAC • AAC • WebM • Opus</p>
+
+            <h3 style="color: #333; margin-top: 20px; margin-bottom: 10px;">5. Configuration</h3>
+            <div class="example-code">
+                <code>// Custom Whisper service URL<br>
+const audio = new AudioTranscription('https://your-domain.com:5000');<br><br>
+// Change max file size<br>
+audio.setMaxFileSize(1000); // 1GB<br><br>
+// Check service availability<br>
+const available = await audio.isServiceAvailable();</code>
+            </div>
+
+            <h3 style="color: #333; margin-top: 20px; margin-bottom: 10px;">6. Talk Bot Command</h3>
+            <p style="color: #666; margin-bottom: 10px;">In any Talk room, mention the bot to transcribe recordings:</p>
+            <div class="example-code">
+                <code>@boudica transcribe</code>
+            </div>
+            <p style="color: #666; font-size: 13px;">
+                Bot will transcribe recent recordings and email all room participants with the transcript.
+            </p>
+        </div>
+
+        <!-- Integration Docs Link -->
+        <div class="demo-section" style="margin-top: 30px; text-align: center;">
+            <h2>📖 Documentation</h2>
+            <p style="color: #666; margin-bottom: 20px;">
+                For detailed API documentation, examples, and troubleshooting, see:
+            </p>
+            <p>
+                <strong>AUDIO_TRANSCRIPTION_INTEGRATION.md</strong>
+            </p>
+            <p style="color: #999; font-size: 12px; margin-top: 15px;">
+                Complete reference guide with all methods, configuration options, and error handling.
+            </p>
+        </div>
+    </div>
+
+    <!-- Load the AudioTranscription modules for demo -->
+    <script src="audio-transcription.js"></script>
+
+    <script>
+        let selectedFile = null;
+        let audioService = new AudioTranscription('https://myboudica.com/whisper');
+
+        document.getElementById('fileUpload').addEventListener('change', function(e) {
+            selectedFile = e.target.files[0];
+            if (selectedFile) {
+                document.getElementById('fileName').textContent = selectedFile.name;
+                document.getElementById('fileSize').textContent = 
+                    (selectedFile.size / 1024 / 1024).toFixed(2) + ' MB';
+                document.getElementById('selectedFileInfo').style.display = 'block';
+            }
+        });
+
+        async function startTranscription() {
+            if (!selectedFile) {
+                showStatus('Please select a file first', 'error');
+                return;
+            }
+
+            // Check service availability first
+            const available = await audioService.isServiceAvailable();
+            if (!available) {
+                showStatus(
+                    'Whisper service is not available. Make sure the Docker container is running on port 5000.',
+                    'error'
+                );
+                return;
+            }
+
+            showStatus('Starting transcription...', 'info');
+            document.getElementById('progressDiv').style.display = 'block';
+            document.getElementById('resultBox').classList.remove('show');
+
+            try {
+                const result = await audioService.transcribeFile(selectedFile, (message, percent) => {
+                    document.getElementById('progressBar').style.width = percent + '%';
+                    document.getElementById('progressText').textContent = message;
+                });
+
+                document.getElementById('transcriptResult').textContent = result.transcript;
+                document.getElementById('transcriptMeta').textContent = 
+                    'Language: ' + (result.language || 'Unknown') + 
+                    (result.segments ? ' | Segments: ' + result.segments.length : '');
+
+                document.getElementById('resultBox').classList.add('show');
+                showStatus('Transcription complete!', 'success');
+
+            } catch (error) {
+                showStatus('Error: ' + error.message, 'error');
+            } finally {
+                document.getElementById('progressDiv').style.display = 'none';
+            }
+        }
+
+        function copyTranscript() {
+            const text = document.getElementById('transcriptResult').textContent;
+            navigator.clipboard.writeText(text).then(() => {
+                showStatus('Copied to clipboard!', 'success');
+            });
+        }
+
+        function clearDemo() {
+            selectedFile = null;
+            document.getElementById('fileUpload').value = '';
+            document.getElementById('selectedFileInfo').style.display = 'none';
+            document.getElementById('resultBox').classList.remove('show');
+            document.getElementById('statusMessage').innerHTML = '';
+        }
+
+        function showStatus(message, type) {
+            const el = document.getElementById('statusMessage');
+            el.textContent = message;
+            el.className = 'status-message ' + type;
+        }
+    </script>
+</body>
+</html>

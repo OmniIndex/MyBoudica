@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<info xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:noNamespaceSchemaLocation="https://apps.nextcloud.com/schema/apps/info.xsd">
+    <id>boudicadashboard</id>
+    <name>Boudica Dashboard</name>
+    <summary>Domain usage and security dashboard for Boudica admins.</summary>
+    <description><![CDATA[
+Boudica Dashboard is a Nextcloud app that surfaces the same admin
+metrics as the Boudica Admin Portal (overall usage, most-prompted
+questions, security-risk flags, a 30-day usage timeline, and top
+users by volume) directly inside Nextcloud, backed by Chart.js.
+    ]]></description>
+    <version>0.1.0</version>
+    <licence>agpl</licence>
+    <author>You</author>
+    <namespace>BoudicaDashboard</namespace>
+    <category>tools</category>
+    <bugs>https://github.com/yourorg/boudica-dashboard/issues</bugs>
+
+    <dependencies>
+        <nextcloud min-version="27" max-version="34"/>
+    </dependencies>
+
+    <navigations>
+        <navigation>
+            <name>Boudica Dashboard</name>
+            <route>boudicadashboard.page.index</route>
+            <icon>app.svg</icon>
+            <order>11</order>
+        </navigation>
+    </navigations>
+</info>

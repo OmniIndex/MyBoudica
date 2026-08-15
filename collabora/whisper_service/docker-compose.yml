@@ -1,0 +1,39 @@
+services:
+  whisper-transcription:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nextcloud-whisper
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - WHISPER_MODEL=base
+      - WHISPER_MODEL_PATH=/app/models
+      - FLASK_ENV=production
+    volumes:
+      - whisper_models:/app/models
+      - whisper_uploads:/app/uploads
+    networks:
+      - bridge
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  whisper_models:
+    driver: local
+  whisper_uploads:
+    driver: local
+
+networks:
+  bridge:
+    driver: bridge

@@ -1,0 +1,48 @@
+<?php
+
+declare(strict_types=1);
+
+namespace OCA\BoudicaAi\AppInfo;
+
+use OCA\BoudicaAi\Command\TranscribeCallsCommand;
+use OCA\BoudicaAi\Command\JanusTranscriptionCommand;
+use OCA\BoudicaAi\Listener\TalkBotInvokeListener;
+use OCA\BoudicaAi\Listener\CallRecordingListener;
+use OCA\Talk\Events\BotInvokeEvent;
+use OCP\AppFramework\App;
+use OCP\AppFramework\Bootstrap\IBootContext;
+use OCP\AppFramework\Bootstrap\IBootstrap;
+use OCP\AppFramework\Bootstrap\IRegistrationContext;
+
+class Application extends App implements IBootstrap {
+    public const APP_ID = 'boudicaai';
+
+    public function __construct(array $urlParams = []) {
+        parent::__construct(self::APP_ID, $urlParams);
+    }
+
+    // public function register(IRegistrationContext $context): void {
+    //     $context->registerEventListener(BotInvokeEvent::class, TalkBotInvokeListener::class);
+        
+    //     // Register call recording listener for transcript processing
+    //     try {
+    //         if (class_exists('OCA\Talk\Events\RecordingStartedEvent')) {
+    //             $context->registerEventListener(\OCA\Talk\Events\RecordingStartedEvent::class, CallRecordingListener::class);
+    //         }
+    //     } catch (\Throwable $e) {
+    //         // Event class may not exist in this Talk version
+    //     }
+    // }
+
+    public function register(IRegistrationContext $context): void {
+        $context->registerEventListener(BotInvokeEvent::class, TalkBotInvokeListener::class);
+        $context->registerEventListener(\OCA\Talk\Events\CallStartedEvent::class, CallRecordingListener::class);
+        $context->registerEventListener(\OCA\Talk\Events\CallEndedEvent::class, CallRecordingListener::class);
+    }    
+
+    public function boot(IBootContext $context): void {
+        // CSP registration removed — OCP\Security\CSP\ContentSecurityPolicyManager
+        // is not resolvable on this Nextcloud version. Re-add later via the
+        // proxy-through-app approach instead of a direct CSP policy if needed.
+    }
+}
