@@ -3,8 +3,10 @@
 A comprehensive integration of **Boudica Sovereign AI** with Nextcloud and Collabora Online, providing privacy-first, auditable AI assistance for collaborative workflows, document editing, and communication.
 
 **Status:** Production-ready | **Version:** 1.1.1  
-**License:** MIT | **Author:** OmniIndex
+**Licensing:** Mixed — see LICENSE (MIT, core components) and LICENSE-AGPL (Nextcloud/Collabora integration components)
+**Author:** OmniIndex
 
+**Note:** Components that integrate directly with Nextcloud (as a Nextcloud app) or Collabora Online are licensed AGPL-3.0-or-later, consistent with their upstream dependencies. Standalone Boudica AI core components are MIT-licensed.
 ---
 
 ## 🎯 Overview
