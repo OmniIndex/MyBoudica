@@ -1,0 +1,12 @@
+bin/
+tmp/
+vendor/
+
+*.pem
+*.prof
+*.socket
+*.tar.gz
+
+cover.out
+proxy.conf
+server.conf

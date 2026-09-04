@@ -10,7 +10,7 @@ three-pane workspace: a Monaco-based text editor, a file/project tree
 backed by WebDAV, and a chat panel for issuing commands (create file,
 open file, run task, etc.) to the Boudica backend.
     ]]></description>
-    <version>0.4.2</version>
+    <version>0.5.0</version>
     <licence>agpl</licence>
     <author>You</author>
     <namespace>BoudicaCode</namespace>

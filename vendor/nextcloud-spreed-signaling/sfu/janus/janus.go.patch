@@ -1,0 +1,17 @@
+--- a/janus.go
++++ b/janus.go
+@@ func (m *janusSFU) createPublisherRoom(ctx context.Context, handle *janus.Handle, id api.PublicSessionId, streamType sfu.StreamType, settings sfu.NewPublisherSettings) (uint64, api.Bandwidth, error) {
+ 	create_msg := api.StringMap{
+ 		"request":     "create",
+ 		"description": sfu.GetStreamId(id, streamType),
+ 		// We publish every stream in its own Janus room.
+ 		"publishers": 1,
+ 		// Do not use the video-orientation RTP extension as it breaks video
+ 		// orientation changes in Firefox.
+ 		"videoorient_ext": false,
++		// Automatically record every publisher in this room. Janus writes
++		// separate .mjr files per stream (audio/video) to rec_dir, named
++		// using the room's numeric id and the publisher's participant id.
++		"record":   true,
++		"rec_dir":  "/opt/janus/share/janus/recordings",
+ 	}

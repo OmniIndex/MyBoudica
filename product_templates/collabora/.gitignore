@@ -1,0 +1,3 @@
+# Runtime-generated per-deployment artifacts - see setup.sh.
+generated/
+.env

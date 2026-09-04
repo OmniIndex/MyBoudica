@@ -8,6 +8,7 @@ use OCA\BoudicaAi\Command\TranscribeCallsCommand;
 use OCA\BoudicaAi\Command\JanusTranscriptionCommand;
 use OCA\BoudicaAi\Listener\TalkBotInvokeListener;
 use OCA\BoudicaAi\Listener\CallRecordingListener;
+use OCA\BoudicaAi\Login\BoudicaKeycloakLogin;
 use OCA\Talk\Events\BotInvokeEvent;
 use OCP\AppFramework\App;
 use OCP\AppFramework\Bootstrap\IBootContext;
@@ -38,7 +39,14 @@ class Application extends App implements IBootstrap {
         $context->registerEventListener(BotInvokeEvent::class, TalkBotInvokeListener::class);
         $context->registerEventListener(\OCA\Talk\Events\CallStartedEvent::class, CallRecordingListener::class);
         $context->registerEventListener(\OCA\Talk\Events\CallEndedEvent::class, CallRecordingListener::class);
-    }    
+
+        // "Sign in with Boudica" button on Nextcloud's own login page -
+        // registerAlternativeLoginProvider() would be the non-deprecated
+        // choice but needs NC 34+; this app's info.xml declares
+        // min-version 31, so this deprecated-but-still-functional call is
+        // used instead for broader compatibility.
+        $context->registerAlternativeLogin(BoudicaKeycloakLogin::class);
+    }
 
     public function boot(IBootContext $context): void {
         // CSP registration removed — OCP\Security\CSP\ContentSecurityPolicyManager

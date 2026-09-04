@@ -1,0 +1,30 @@
+name: check-continentmap
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - '.github/workflows/check-continentmap.yml'
+      - 'scripts/get_continent_map.py'
+      - 'Makefile'
+  pull_request:
+    branches: [ master ]
+    paths:
+      - '.github/workflows/check-continentmap.yml'
+      - 'scripts/get_continent_map.py'
+      - 'Makefile'
+  schedule:
+    - cron: "0 2 * * SUN"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Check continentmap
+      run: make check-continentmap

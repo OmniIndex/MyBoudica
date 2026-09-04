@@ -1,0 +1,88 @@
+name: lint
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - '.github/workflows/lint.yml'
+      - '.golangci.yml'
+      - '**.go'
+      - 'go.*'
+      - 'Makefile'
+  pull_request:
+    branches: [ master ]
+    paths:
+      - '.github/workflows/lint.yml'
+      - '.golangci.yml'
+      - '**.go'
+      - 'go.*'
+      - 'Makefile'
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: golang
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.25"
+
+      - name: lint
+        uses: golangci/golangci-lint-action@v9.3.0
+        with:
+          version: latest
+          args: --timeout=2m0s
+          skip-cache: true
+
+  modernize:
+    name: modernize
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+
+      - name: moderize
+        run: |
+          go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest -any=false -reflecttypefor=false -test ./...
+
+  checklocks:
+    name: checklocks
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+          check-latest: true
+
+      - name: checklocks
+        run: |
+          make checklocks
+
+  dependencies:
+    name: dependencies
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "stable"
+
+      - name: Check minimum supported version of Go
+        run: |
+          go mod tidy -go=1.25.0 -compat=1.25.0
+
+      - name: Check go.mod / go.sum
+        run: |
+          git add go.*
+          git diff --cached --exit-code go.*

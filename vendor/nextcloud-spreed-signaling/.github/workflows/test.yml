@@ -1,0 +1,110 @@
+name: test
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - '.github/workflows/test.yml'
+      - '.codecov.yml'
+      - '**.go'
+      - 'go.*'
+      - 'Makefile'
+  pull_request:
+    branches: [ master ]
+    paths:
+      - '.github/workflows/test.yml'
+      - '.codecov.yml'
+      - '**.go'
+      - 'go.*'
+      - 'Makefile'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        go-version:
+          - "1.25"
+          - "1.26"
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - uses: actions/setup-go@v7
+      with:
+        go-version: ${{ matrix.go-version }}
+
+    - name: Build applications
+      run: |
+        echo "Building with $(nproc) threads"
+        make client -j$(nproc)
+        make proxy -j$(nproc)
+        make server -j$(nproc)
+
+  go:
+    env:
+      MAXMIND_GEOLITE2_LICENSE: ${{ secrets.MAXMIND_GEOLITE2_LICENSE }}
+      USE_DB_IP_GEOIP_DATABASE: "1"
+    strategy:
+      matrix:
+        go-version:
+          - "1.25"
+          - "1.26"
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - uses: actions/setup-go@v7
+      with:
+        go-version: ${{ matrix.go-version }}
+
+    - name: Run tests
+      run: |
+        make test TIMEOUT=120s
+
+  benchmark:
+    env:
+      MAXMIND_GEOLITE2_LICENSE: ${{ secrets.MAXMIND_GEOLITE2_LICENSE }}
+      USE_DB_IP_GEOIP_DATABASE: "1"
+    strategy:
+      matrix:
+        go-version:
+          - "1.25"
+          - "1.26"
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - uses: actions/setup-go@v7
+      with:
+        go-version: ${{ matrix.go-version }}
+
+    - name: Run benchmarks
+      run: |
+        make benchmark
+
+  coverage:
+    env:
+      MAXMIND_GEOLITE2_LICENSE: ${{ secrets.MAXMIND_GEOLITE2_LICENSE }}
+      USE_DB_IP_GEOIP_DATABASE: "1"
+    strategy:
+      matrix:
+        go-version:
+          - "1.25"
+          - "1.26"
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - uses: actions/setup-go@v7
+      with:
+        go-version: ${{ matrix.go-version }}
+
+    - name: Generate coverage report
+      run: |
+        make cover TIMEOUT=120s
+
+    - name: Upload coverage reports to Codecov
+      uses: codecov/codecov-action@v7
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        files: ./cover.out
+        flags: go-${{ matrix.go-version }}

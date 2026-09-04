@@ -1,0 +1,258 @@
+##
+## Boudica-Nextcloud-Collabora integration stack (Talk, Files, own UI).
+## Containerizes what previously ran hand-built across 6 servers (see
+## RUNBOOK.md) - single box for a sovereign/on-prem trial by default;
+## a sysadmin splits pieces onto separate boxes for a medium/large
+## deployment by pointing the relevant env vars at externally-hosted
+## instances instead (see README.md), no code changes needed either way.
+##
+## Run from this directory (./setup.sh first) so container/volume names are
+## namespaced automatically, or pass -p explicitly:
+##   docker compose -p boudica-collabora up -d
+##
+services:
+  # No postgres service here - shares boudica_slm's own instance (service
+  # name `postgres`, reachable via the `boudica_shared` external network)
+  # instead of running a second one. The `nextcloud` database/role in that
+  # shared instance is created by setup.sh at install time (idempotent
+  # `docker exec` against the running container), not a postgres-init
+  # script - install order between the two products isn't guaranteed, and
+  # /docker-entrypoint-initdb.d scripts only ever run once against a truly
+  # empty data directory.
+
+  redis:
+    image: redis:latest
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  nextcloud:
+    image: git.omniindex.io:5050/omniindex/boudica-collabora/nextcloud:latest
+    build:
+      context: ./nextcloud
+      args:
+        NEXTCLOUD_VERSION: ${NEXTCLOUD_VERSION:-34.0.2}
+    depends_on: [redis]  # postgres is external/shared - see the boudica_shared network note above
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: nextcloud
+      POSTGRES_USER: nextcloud
+      POSTGRES_PASSWORD: ${BOUDICA_DB_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_HOST_PASSWORD: ${REDIS_PASSWORD}
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD}
+      NEXTCLOUD_TRUSTED_DOMAINS: ${BOUDICA_DOMAIN}
+      # Always carries the port explicitly, even the standard 443 - harmless
+      # (https://x:443/ and https://x/ are identical to a browser) but
+      # necessary for a non-standard port like the 8443 this test box uses
+      # to avoid a port conflict. Without this, Nextcloud has no way to
+      # know the real external port - nginx's $host variable (used for the
+      # Host header it forwards) strips the port from what the browser
+      # actually sent, so Nextcloud silently defaults to 443 and every
+      # generated redirect/login URL comes back missing the real port.
+      OVERWRITEHOST: ${BOUDICA_DOMAIN}:${BOUDICA_HTTPS_PORT:-443}
+      OVERWRITECLIURL: https://${BOUDICA_DOMAIN}:${BOUDICA_HTTPS_PORT:-443}
+      OVERWRITEPROTOCOL: https
+      # Talk's own MCU/signaling wiring - read by Nextcloud's Talk admin
+      # settings (occ talk:* / the admin UI) at first boot via
+      # generated/nextcloud/talk-config.sh, not by the base image directly.
+      TALK_SIGNALING_HOST: https://talk.${BOUDICA_DOMAIN}
+      TALK_SIGNALING_SECRET: ${TALK_BACKEND_SECRET}
+    volumes:
+      - nextcloud_data:/var/www/html
+      # Custom apps mounted individually (not baked into the image) so
+      # `occ app:enable`/app updates work normally without an image rebuild.
+      - ../../nextcloud/boudicaai:/var/www/html/custom_apps/boudicaai
+      - ../../nextcloud/boudicaagent:/var/www/html/custom_apps/boudicaagent
+      - ../../nextcloud/boudicacode:/var/www/html/custom_apps/boudicacode
+      - ../../nextcloud/boudicadashboard:/var/www/html/custom_apps/boudicadashboard
+      # janus-pp-rec's output (boudicaai's JanusRecordingMonitor.php scans
+      # this path) - shared with the janus service below.
+      - janus_recordings:/mnt/janus-recordings:ro
+      - ./generated/nextcloud/boudica-csp.conf:/etc/apache2/conf-available/boudica-csp.conf:ro
+    restart: unless-stopped
+
+  nextcloud-cron:
+    image: git.omniindex.io:5050/omniindex/boudica-collabora/nextcloud:latest
+    build:
+      context: ./nextcloud
+      args:
+        NEXTCLOUD_VERSION: ${NEXTCLOUD_VERSION:-34.0.2}
+    depends_on: [redis, nextcloud]  # postgres is external/shared
+    entrypoint: /bin/sh
+    # Nextcloud's background-jobs system (occ, cron.php) has no internal
+    # scheduler of its own - boudicaai's DigestPollJob (5-minute interval)
+    # does not run at all without something invoking cron.php periodically.
+    #
+    # user: www-data is required, not cosmetic - cron.php refuses to run as
+    # any other user ("Console has to be executed with the user that owns
+    # the file config/config.php"), confirmed live: without this, the
+    # digest job silently failed every single run, every 5 minutes.
+    user: www-data
+    command: ["-c", "while true; do php /var/www/html/cron.php; sleep 300; done"]
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: nextcloud
+      POSTGRES_USER: nextcloud
+      POSTGRES_PASSWORD: ${BOUDICA_DB_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_HOST_PASSWORD: ${REDIS_PASSWORD}
+    volumes:
+      - nextcloud_data:/var/www/html
+      - ../../nextcloud/boudicaai:/var/www/html/custom_apps/boudicaai
+      - ../../nextcloud/boudicaagent:/var/www/html/custom_apps/boudicaagent
+      - ../../nextcloud/boudicacode:/var/www/html/custom_apps/boudicacode
+      - ../../nextcloud/boudicadashboard:/var/www/html/custom_apps/boudicadashboard
+    restart: unless-stopped
+
+  collabora:
+    image: git.omniindex.io:5050/omniindex/boudica-collabora/collabora:latest
+    build:
+      context: ./collabora
+      args:
+        COLLABORA_TAG: ${COLLABORA_TAG:-latest}
+    environment:
+      # "first" mode (implicit trust-on-first-connect) matches the live
+      # deployment's current WOPI trust model - see RUNBOOK.md's coolwsd.xml.
+      # A real allowlist (aliasgroup1) is the safer option; left as an env
+      # var so tightening this later doesn't require an image change.
+      aliasgroup1: https://${BOUDICA_DOMAIN}:${BOUDICA_HTTPS_PORT:-443}
+      DONT_GEN_SSL_CERT: "true"
+      extra_params: --o:ssl.enable=false --o:ssl.termination=true
+      # coolwsd's own default CSP (style-src 'self';) blocks the widget's
+      # dynamically-injected <style> tag outright - confirmed live the
+      # widget's JS/HTML loaded fine but every rule in it was silently
+      # dropped by the browser, no console error. This is its own,
+      # separate, directly-supported env var (NOT one of the
+      # space-separated flags inside extra_params, which was tried first
+      # and silently failed - extra_params gets naively split on
+      # whitespace, so a value containing its own spaces, like a CSP
+      # directive, breaks). coolwsd merges this into its built-in default
+      # per-directive rather than replacing the whole policy (confirmed:
+      # the resulting header has 'self' 'self' 'unsafe-inline' - harmless
+      # duplicate, not a sign anything is wrong).
+      content_security_policy: style-src 'self' 'unsafe-inline';
+    depends_on: [nextcloud]
+    volumes:
+      - ./generated/collabora/boudica-config.js:/usr/share/coolwsd/browser/dist/boudica-config.js:ro
+    restart: unless-stopped
+
+  janus:
+    build:
+      context: ../../vendor/nextcloud-spreed-signaling/docker/janus
+    # Janus does a startup self-test STUN request against the configured
+    # TURN server and treats no response as fatal, exiting immediately -
+    # confirmed live (crash-looped until eturnal was actually up and
+    # healthy). Waits on eturnal's healthcheck specifically, not just
+    # container start - a plain depends_on only guarantees the container
+    # process began, not that its TURN listener is actually bound yet.
+    depends_on:
+      eturnal:
+        condition: service_healthy
+    volumes:
+      - ./generated/janus/janus.jcfg:/usr/local/etc/janus/janus.jcfg:ro
+      - janus_recordings:/opt/janus/share/janus/recordings
+    restart: unless-stopped
+
+  signaling:
+    image: git.omniindex.io:5050/omniindex/boudica-collabora/signaling:latest
+    build:
+      context: ../../vendor/nextcloud-spreed-signaling
+      dockerfile: ../../product_templates/collabora/signaling/Dockerfile
+    depends_on: [janus]
+    volumes:
+      - ./generated/signaling/server.conf:/config/server.conf:ro
+    # No host port publish - nginx reaches this over the internal Docker
+    # network by service name (see nginx/default.conf's talk. vhost), and a
+    # host-published 8081 collides with anything else on the box already
+    # using that port (e.g. boudica_slm's own Keycloak default).
+    restart: unless-stopped
+
+  eturnal:
+    image: eturnal/eturnal:latest
+    network_mode: host
+    volumes:
+      - ./generated/eturnal/eturnal.yml:/etc/eturnal.yml:ro
+    restart: unless-stopped
+
+  # No whisper service here either - shares boudica_slm's instance (service
+  # name `whisper`, port 5000, reachable via `boudica_shared`), which is
+  # also the more complete of the two copies (a real VAD empty-sequence
+  # bug fix this repo's own copy lacked). boudicaai's own Whisper
+  # integration (TranscriptionService.php) was never actually wired up in
+  # this stack even before this change - whisper_service_url defaulted to
+  # null - setup.sh now sets it to the shared instance, fixing that
+  # pre-existing gap in the same pass.
+
+  mail:
+    # Lightweight relay only - real outbound delivery/sender verification is
+    # external (SendGrid or similar), same as the native deployment. This
+    # container's only job is giving Nextcloud a local SMTP hop that's up
+    # before Nextcloud is (native Postfix's own boot-order bug, RUNBOOK.md
+    # 4.6, doesn't exist here since compose brings services up in dependency
+    # order rather than racing systemd units at host boot).
+    image: boky/postfix:latest
+    environment:
+      ALLOWED_SENDER_DOMAINS: ${BOUDICA_DOMAIN}
+      RELAYHOST: ${SMTP_RELAYHOST:-}
+    restart: unless-stopped
+
+  whiteboard:
+    image: ghcr.io/nextcloud/whiteboard:release
+    environment:
+      NEXTCLOUD_URL: https://${BOUDICA_DOMAIN}
+      JWT_SECRET_KEY: ${WHITEBOARD_JWT_SECRET}
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:latest
+    depends_on: [nextcloud, collabora, signaling, whiteboard]
+    volumes:
+      - ./generated/nginx:/etc/nginx/conf.d:ro
+      - ${BOUDICA_TLS_CERT_DIR:-./generated/nginx/certs}:/etc/nginx/certs:ro
+    # Same port number on both sides of the colon deliberately, not the
+    # usual "hostport:containerport" translation - see the nginx config's
+    # own note on why (Nextcloud's server-side HPB connectivity check hits
+    # this container from the *inside* of the Docker network, where only
+    # the container's real listening port exists at all - Docker's
+    # host-side port-publish translation is a NAT rule the host applies,
+    # it isn't reachable via the internal network namespace another
+    # container lives in).
+    ports:
+      - "${BOUDICA_HTTP_PORT:-80}:${BOUDICA_HTTP_PORT:-80}"
+      - "${BOUDICA_HTTPS_PORT:-443}:${BOUDICA_HTTPS_PORT:-443}"
+    # Network aliases so any container on this network (Nextcloud, in
+    # particular) can resolve the public hostnames straight to this
+    # container via Docker's built-in DNS. Needed because Nextcloud Talk's
+    # own admin-panel "High-performance backend" check connects to the
+    # signaling URL server-side (from inside the nextcloud container, not
+    # the browser) - confirmed live it failed with "Cannot connect to
+    # server" / curl exit 6 "Couldn't resolve host", since nothing on the
+    # Docker network otherwise knows what talk.<domain> even is.
+    networks:
+      default:
+        aliases:
+          - ${BOUDICA_DOMAIN}
+          - talk.${BOUDICA_DOMAIN}
+          - whiteboard.${BOUDICA_DOMAIN}
+    restart: unless-stopped
+
+networks:
+  # Named + external so boudica_slm's own product_templates/multiuser
+  # compose project (a separate repo, separate `docker compose` project)
+  # resolves to this exact same underlying network - Nextcloud is the
+  # shared front door for both products, with one Postgres and one Whisper
+  # serving both rather than each product running its own. Created
+  # idempotently by either product's setup.sh:
+  # `docker network inspect boudica_shared >/dev/null 2>&1 || docker
+  # network create boudica_shared`.
+  default:
+    name: boudica_shared
+    external: true
+
+volumes:
+  redis_data:
+  nextcloud_data:
+  janus_recordings:

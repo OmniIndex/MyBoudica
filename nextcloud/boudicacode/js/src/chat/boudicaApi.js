@@ -42,7 +42,11 @@
 
     const BoudicaCode = global.BoudicaCode || (global.BoudicaCode = {});
 
-    const DEFAULT_API_BASE = 'https://boudi.ca/api/boudica';
+    // window.BOUDICA_API_BASE is injected server-side by the app's Nextcloud
+    // template (reads an admin-configurable value) - lets a sovereign/
+    // on-prem deployment point this app at its own inference server instead
+    // of the boudi.ca SaaS default, without a code change per deployment.
+    const DEFAULT_API_BASE = global.BOUDICA_API_BASE || 'https://boudi.ca/api/boudica';
 
     function apiBase() {
         return localStorage.getItem('boudica_api_url') || DEFAULT_API_BASE;
@@ -167,6 +171,7 @@
          * @param {number} [opts.temperature]
          * @param {number} [opts.maxTokens]
          * @param {(partialText: string) => void} [opts.onToken] - if provided, streams; called with the growing text as tokens arrive
+         * @param {AbortSignal} [opts.signal] - lets the caller cancel an in-flight request (e.g. a chat panel "Stop" button); aborting rejects with a DOMException named 'AbortError'
          * @returns {Promise<string>}
          */
         async send(baseSessionId, promptText, opts = {}) {
@@ -189,14 +194,17 @@
                 inference_type: 'code_assistant',
             };
 
-            return opts.onToken ? this._sendStreaming(url, body, opts.onToken) : this._sendOnce(url, body);
+            return opts.onToken
+                ? this._sendStreaming(url, body, opts.onToken, opts.signal)
+                : this._sendOnce(url, body, opts.signal);
         }
 
-        async _sendOnce(url, body) {
+        async _sendOnce(url, body, signal) {
             const res = await wrapEndpointFetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body),
+                signal,
             });
             if (!res.ok) {
                 const err = await res.json().catch(() => ({ error: `Boudica request failed (${res.status})` }));
@@ -216,11 +224,12 @@
          * branches from the original are intentionally not ported (see
          * this file's docblock).
          */
-        async _sendStreaming(url, body, onToken) {
+        async _sendStreaming(url, body, onToken, signal) {
             const res = await wrapEndpointFetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body),
+                signal,
             });
             if (!res.ok) {
                 const err = await res.json().catch(() => ({ error: `Boudica request failed (${res.status})` }));
