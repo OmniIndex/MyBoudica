@@ -1,0 +1,68 @@
+name: Docker image
+
+on:
+  pull_request:
+    branches: [ master ]
+    paths:
+      - '.github/workflows/docker.yml'
+      - '**.go'
+      - 'go.*'
+      - 'Makefile'
+      - '*.conf.in'
+      - 'docker/server/*'
+      - 'docker/proxy/*'
+  push:
+    branches: [ master ]
+    paths:
+      - '.github/workflows/docker.yml'
+      - '**.go'
+      - 'go.*'
+      - 'Makefile'
+      - '*.conf.in'
+      - 'docker/server/*'
+      - 'docker/proxy/*'
+
+permissions:
+  contents: read
+
+env:
+  TEST_TAG: strukturag/nextcloud-spreed-signaling:test
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/server/Dockerfile
+          platforms: linux/amd64,linux/arm64
+
+  proxy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/proxy/Dockerfile
+          platforms: linux/amd64,linux/arm64

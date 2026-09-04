@@ -1,6 +1,28 @@
 <?php
 style('boudicaagent', 'style');
 
+// Must print before agentAuth.js/agentApi.js load - both read
+// window.BOUDICA_API_BASE as their override (see the comments in those
+// files). $_['boudica_api_base'] comes from PageController::index().
+print_unescaped('<script>window.BOUDICA_API_BASE = ' . json_encode($_['boudica_api_base'], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ';</script>');
+
+// Pre-seeds localStorage['boudica_session'] from the credential minted at
+// Keycloak login time (PageController::index()) so agentAuth.js's
+// ensureSession() finds it already there and never falls through to its own
+// unconditional /beta/signup auto-signup. No-op (prints nothing) for a user
+// with no provisioned key yet - e.g. the setup.sh admin account, or anyone
+// who hasn't logged in through "Sign in with Boudica" yet.
+if (!empty($_['boudica_provisioned_key'])) {
+    print_unescaped(
+        '<script>(function(){try{if(!localStorage.getItem("boudica_session")){localStorage.setItem("boudica_session",'
+        . json_encode(json_encode([
+            'token' => $_['boudica_provisioned_key'],
+            'email' => $_['boudica_provisioned_email'],
+        ]), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT)
+        . ');}}catch(e){}})();</script>'
+    );
+}
+
 script('boudicaagent', 'src/core/agentAuth');
 script('boudicaagent', 'src/core/agentApi');
 script('boudicaagent', 'src/agent/agentManager');

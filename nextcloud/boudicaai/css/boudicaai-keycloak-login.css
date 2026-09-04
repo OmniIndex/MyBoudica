@@ -1,0 +1,19 @@
+/* "Sign in with Boudica" alternative-login button on Nextcloud's own
+ * login page - see BoudicaKeycloakLogin.php. */
+.alternative-logins a.boudica-keycloak-login {
+	display: block;
+	margin-top: 8px;
+	padding: 10px 12px;
+	border-radius: var(--border-radius, 4px);
+	background-color: var(--color-primary-element, #00679e);
+	color: var(--color-primary-element-text, #fff);
+	text-align: center;
+	font-weight: bold;
+	text-decoration: none;
+}
+
+.alternative-logins a.boudica-keycloak-login:hover,
+.alternative-logins a.boudica-keycloak-login:focus {
+	background-color: var(--color-primary-element-hover, #005585);
+	color: var(--color-primary-element-text, #fff);
+}

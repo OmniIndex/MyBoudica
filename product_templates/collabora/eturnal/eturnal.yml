@@ -1,0 +1,25 @@
+## eturnal (TURN/STUN) config. relay_min_port/relay_max_port are FLAT keys
+## directly under `eturnal:` - NOT nested under a `relay: {}` block (that key
+## doesn't exist and crashes the service - RUNBOOK.md 4.3).
+##
+## __TURN_SHARED_SECRET__ must match the signaling server's [turn] secret.
+## __JANUS_TURN_PASSWORD__ must match Janus's nat: { turn_pwd } setting.
+## __PUBLIC_IP__ is this container's/host's real reachable IP - required for
+## NAT traversal to work at all (relay candidates are advertised using it).
+## All three substituted by setup.sh.
+eturnal:
+  secret: "__TURN_SHARED_SECRET__"
+  relay_ipv4_addr: "__PUBLIC_IP__"
+  listen:
+    - ip: "0.0.0.0"
+      port: 3478
+      transport: udp
+    - ip: "0.0.0.0"
+      port: 3478
+      transport: tcp
+  relay_min_port: 49152
+  relay_max_port: 65535
+  credentials:
+    janus: "__JANUS_TURN_PASSWORD__"
+  modules:
+    mod_log_stun: {}

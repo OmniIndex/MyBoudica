@@ -15,7 +15,10 @@
 
     const BoudicaCode = global.BoudicaCode || (global.BoudicaCode = {});
 
-    const SIGNUP_URL = 'https://boudi.ca/api/boudica/beta/signup';
+    // See the matching comment in dashboardApi.js - same window.BOUDICA_API_BASE
+    // override, kept independent here since this file loads before it and
+    // the two don't share module scope.
+    const SIGNUP_URL = (global.BOUDICA_API_BASE || 'https://boudi.ca/api/boudica') + '/beta/signup';
 
     function readSession() {
         try {

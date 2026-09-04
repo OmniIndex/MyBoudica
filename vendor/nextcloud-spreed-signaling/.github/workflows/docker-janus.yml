@@ -1,0 +1,36 @@
+name: Janus Docker image
+
+on:
+  pull_request:
+    branches: [ master ]
+    paths:
+      - '.github/workflows/docker-janus.yml'
+      - 'docker/janus/Dockerfile'
+  push:
+    branches: [ master ]
+    paths:
+      - '.github/workflows/docker-janus.yml'
+      - 'docker/janus/Dockerfile'
+
+permissions:
+  contents: read
+
+env:
+  TEST_TAG: strukturag/nextcloud-spreed-signaling:janus-test
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v7
+        with:
+          context: docker/janus
+          load: true
+          tags: ${{ env.TEST_TAG }}

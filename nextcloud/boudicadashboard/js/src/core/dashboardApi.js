@@ -28,7 +28,11 @@
 
     const BoudicaCode = global.BoudicaCode || (global.BoudicaCode = {});
 
-    const DEFAULT_API_BASE = 'https://boudi.ca/api/boudica';
+    // window.BOUDICA_API_BASE is injected server-side by the app's Nextcloud
+    // template (reads an admin-configurable value) - lets a sovereign/
+    // on-prem deployment point this app at its own inference server instead
+    // of the boudi.ca SaaS default, without a code change per deployment.
+    const DEFAULT_API_BASE = global.BOUDICA_API_BASE || 'https://boudi.ca/api/boudica';
 
     function apiBase() {
         return localStorage.getItem('boudica_api_url') || DEFAULT_API_BASE;

@@ -1,0 +1,80 @@
+version: "2"
+linters:
+  enable:
+    - errchkjson
+    - exptostd
+    - gocritic
+    - misspell
+    - modernize
+    - paralleltest
+    - perfsprint
+    - revive
+    - testifylint
+  settings:
+    errchkjson:
+      check-error-free-encoding: true
+      report-no-exported: true
+    gocritic:
+      disabled-checks:
+        - singleCaseSwitch
+      settings:
+        ifElseChain:
+          # Min number of if-else blocks that makes the warning trigger.
+          # Default: 2
+          minThreshold: 3
+    govet:
+      enable:
+        - nilness
+      disable:
+        - stdversion
+    revive:
+      severity: warning
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-return
+        #- name: error-strings
+        - name: error-naming
+        - name: exported
+        - name: if-return
+        - name: increment-decrement
+        #- name: var-naming
+        - name: var-declaration
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        #- name: indent-error-flow
+        - name: errorf
+        - name: empty-block
+        - name: superfluous-else
+        #- name: unused-parameter
+        - name: unreachable-code
+        - name: use-any
+        - name: redefines-builtin-id
+    testifylint:
+      disable:
+        - require-error
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

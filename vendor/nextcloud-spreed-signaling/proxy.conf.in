@@ -1,0 +1,113 @@
+[http]
+# IP and port to listen on for HTTP requests.
+# Comment line to disable the listener.
+#listen = 127.0.0.1:9090
+
+[app]
+# Set to "true" to install pprof debug handlers. Access will only be possible
+# from IPs allowed through the "allowed_ips" option below.
+#
+# See "https://golang.org/pkg/net/http/pprof/" for further information.
+#debug = false
+
+# Comma separated list of trusted proxies (IPs or CIDR networks) that may set
+# the "X-Real-Ip" or "X-Forwarded-For" headers. If both are provided, the
+# "X-Real-Ip" header will take precedence (if valid).
+# Leave empty to allow loopback and local addresses.
+#trustedproxies =
+
+# ISO 3166 country this proxy is located at. This will be used by the signaling
+# servers to determine the closest proxy for publishers.
+#country = DE
+
+# Type of token configuration for signaling servers allowed to connect, see
+# below for details. Defaults to "static".
+#
+# Possible values:
+# - static: A mapping of token id -> public key is configured below.
+# - etcd: Token information are retrieved from an etcd cluster (see below).
+tokentype = static
+
+# The external hostname for remote streams. Leaving this empty will autodetect
+# and use the first public IP found on the available network interfaces.
+#hostname =
+
+# The token id to use when connecting remote stream.
+#token_id = server1
+
+# The private key for the configured token id to use when connecting remote
+# streams.
+#token_key = privkey.pem
+
+# If set to "true", certificate validation of remote stream requests will be
+# skipped. This should only be enabled during development, e.g. to work with
+# self-signed certificates.
+#skipverify = false
+
+[bandwidth]
+# Target bandwidth limit for incoming streams (in megabits per second).
+# Set to 0 to disable the limit. If the limit is reached, the proxy notifies
+# the signaling servers that another proxy should be used for publishing if
+# possible.
+#incoming = 1024
+
+# Target bandwidth limit for outgoing streams (in megabits per second).
+# Set to 0 to disable the limit. If the limit is reached, the proxy notifies
+# the signaling servers that another proxy should be used for subscribing if
+# possible. Note that this might require additional outgoing bandwidth for the
+# remote streams.
+#outgoing = 1024
+
+[tokens]
+# For token type "static": Mapping of <tokenid> = <publickey> of signaling
+# servers allowed to connect.
+#server1 = pubkey1.pem
+#server2 = pubkey2.pem
+
+# For token type "etcd": Format of key name to retrieve the public key from,
+# "%s" will be replaced with the token id. Multiple possible formats can be
+# comma-separated.
+#keyformat = /signaling/proxy/tokens/%s/public-key
+
+[mcu]
+# The type of the MCU to use. Currently only "janus" is supported.
+type = janus
+
+# The URL to the websocket endpoint of the MCU server.
+url = ws://localhost:8188/
+
+# The maximum bitrate per publishing stream (in bits per second).
+# Defaults to 1 mbit/sec.
+#maxstreambitrate = 1048576
+
+# The maximum bitrate per screensharing stream (in bits per second).
+# Default is 2 mbit/sec.
+#maxscreenbitrate = 2097152
+
+# List of IP addresses / subnets that are allowed to be used by clients in
+# candidates. The allowed list has preference over the blocked list below.
+#allowedcandidates = 10.0.0.0/8
+
+# List of IP addresses / subnets to filter from candidates received by clients.
+#blockedcandidates = 1.2.3.0/24
+
+[stats]
+# Comma-separated list of IP addresses that are allowed to access the debug,
+# stats and metrics endpoints.
+# Leave empty (or commented) to only allow access from localhost.
+#allowed_ips =
+
+[etcd]
+# Comma-separated list of static etcd endpoints to connect to.
+#endpoints = 127.0.0.1:2379,127.0.0.1:22379,127.0.0.1:32379
+
+# Options to perform endpoint discovery through DNS SRV.
+# Only used if no endpoints are configured manually.
+#discoverysrv = example.com
+#discoveryservice = foo
+
+# Path to private key, client certificate and CA certificate if TLS
+# authentication should be used.
+#clientkey = /path/to/etcd-client.key
+#clientcert = /path/to/etcd-client.crt
+#cacert = /path/to/etcd-ca.crt

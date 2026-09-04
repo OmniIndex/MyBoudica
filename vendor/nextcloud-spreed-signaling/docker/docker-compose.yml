@@ -1,0 +1,57 @@
+services:
+
+  spreedbackend:
+    build:
+      context: ..
+      dockerfile: docker/server/Dockerfile
+      platforms:
+        - "linux/amd64"
+    volumes:
+      - ./server.conf:/config/server.conf:ro
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - nats
+      - janus
+      - coturn
+
+  nats:
+    image: nats:2.10
+    volumes:
+      - type: bind
+        source: ./gnatsd.conf
+        target: /config/gnatsd.conf
+        read_only: true
+    command: ["-c", "/config/gnatsd.conf"]
+    network_mode: host
+    restart: unless-stopped
+
+  janus:
+    build: janus
+    command: ["janus", "--full-trickle"]
+    network_mode: host
+    restart: unless-stopped
+
+  coturn:
+    image: coturn/coturn:4.6
+    network_mode: host
+    #
+    # Update command parameters as necessary.
+    #
+    # See https://github.com/coturn/coturn/blob/master/README.turnserver for
+    # available options.
+    command:
+      - "--realm"
+      - "nextcloud.domain.invalid"
+      - "--static-auth-secret"
+      - "static_secret_same_in_server_conf"
+      - "--no-stdout-log"
+      - "--log-file"
+      - "stdout"
+      - "--stale-nonce=600"
+      - "--use-auth-secret"
+      - "--lt-cred-mech"
+      - "--fingerprint"
+      - "--no-software-attribute"
+      - "--no-multicast-peers"
+    restart: unless-stopped

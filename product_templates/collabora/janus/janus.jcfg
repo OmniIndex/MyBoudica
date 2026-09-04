@@ -1,0 +1,22 @@
+## Janus core config. Uses libconfig BRACE syntax (nat: { ... }), NOT
+## bracket/INI syntax ([nat]) - bracket syntax is silently ignored with no
+## error (RUNBOOK.md 4.2). full_trickle is required: without it, Janus's own
+## slow STUN/TURN gathering can exceed ICE timeouts.
+
+general: {
+	rtp_port_range = "20000-25000"
+	recordings_tmp_ext = "tmp"
+}
+
+nat: {
+	nat_1_1_mapping = true
+	public_ip = ["__PUBLIC_IP__"]
+	stun_server = "__TURN_HOST__"
+	stun_port = 3478
+	turn_server = "__TURN_HOST__"
+	turn_port = 3478
+	turn_type = "udp"
+	turn_user = "janus"
+	turn_pwd = "__JANUS_TURN_PASSWORD__"
+	full_trickle = true
+}
