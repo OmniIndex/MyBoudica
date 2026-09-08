@@ -137,7 +137,17 @@
         temperature: 0.8,
         topK: 50,
         topP: 0.9,
-        requestTimeout: 120000
+        // 120s was too short for real document_writer + RAG + thinking-mode
+        // generations - a real user request with a modest selection took
+        // long enough to still be genuinely streaming past that mark,
+        // which aborts a still-successful response mid-flight. Confirmed
+        // live 2026-09-08: Apache's own access log showed the request
+        // completing with a full 200 and 202KB delivered, so the server
+        // side was never the problem - the abort just fired too early and
+        // the widget's own watchdog (config.requestTimeout + 10000) then
+        // surfaced this as a "stalled request" error to a user who wasn't
+        // even on a VPN. 300s gives realistic generations enough room.
+        requestTimeout: 300000
     };
 
     // Merge with user config
