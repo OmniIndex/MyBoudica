@@ -60,6 +60,11 @@ services:
       # generated/nextcloud/talk-config.sh, not by the base image directly.
       TALK_SIGNALING_HOST: https://talk.${BOUDICA_DOMAIN}
       TALK_SIGNALING_SECRET: ${TALK_BACKEND_SECRET}
+    # Loopback-only, always published regardless of proxy mode - see the
+    # nginx service's own comment below for why this exists alongside (not
+    # instead of) the bundled-nginx routing.
+    ports:
+      - "127.0.0.1:${BOUDICA_NEXTCLOUD_LOCAL_PORT:-8082}:80"
     volumes:
       - nextcloud_data:/var/www/html
       # Custom apps mounted individually (not baked into the image) so
@@ -105,6 +110,13 @@ services:
       - ../../nextcloud/boudicaagent:/var/www/html/custom_apps/boudicaagent
       - ../../nextcloud/boudicacode:/var/www/html/custom_apps/boudicacode
       - ../../nextcloud/boudicadashboard:/var/www/html/custom_apps/boudicadashboard
+      # JanusTranscribeJob (boudicaai background job, runs via this
+      # container's cron.php loop) needs the same recordings mount the
+      # main nextcloud service has - without it, /mnt/janus-recordings
+      # doesn't exist here at all and every 5-minute run silently finds
+      # nothing to transcribe. Found while verifying the automatic
+      # call-transcription flow end-to-end, 2026-09-05.
+      - janus_recordings:/mnt/janus-recordings:ro
     restart: unless-stopped
 
   collabora:
@@ -113,6 +125,13 @@ services:
       context: ./collabora
       args:
         COLLABORA_TAG: ${COLLABORA_TAG:-latest}
+    # Loopback-only, always published regardless of proxy mode (bundled
+    # nginx or an external one - see the nginx service's own comment below).
+    # Harmless when nginx is doing the routing internally over the Docker
+    # network instead - this is just an extra local access point, e.g. for
+    # a host-level reverse proxy or for debugging via curl from the host.
+    ports:
+      - "127.0.0.1:${BOUDICA_COLLABORA_LOCAL_PORT:-8083}:9980"
     environment:
       # "first" mode (implicit trust-on-first-connect) matches the live
       # deployment's current WOPI trust model - see RUNBOOK.md's coolwsd.xml.
@@ -136,10 +155,24 @@ services:
       content_security_policy: style-src 'self' 'unsafe-inline';
     depends_on: [nextcloud]
     volumes:
+      # This bind mount was already correct - the actual bug (found
+      # 2026-09-05) was upstream of it: .env's BOUDICA_API_ENDPOINT was
+      # stale (predated the "Nextcloud as front door" fix), and setup.sh
+      # silently discarded any corrected value typed at its prompt on a
+      # re-run (source .env clobbered it - see that fix in setup.sh), so
+      # this correctly-working mount kept faithfully serving a correctly-
+      # rendered file with the wrong endpoint baked in.
       - ./generated/collabora/boudica-config.js:/usr/share/coolwsd/browser/dist/boudica-config.js:ro
     restart: unless-stopped
 
   janus:
+    # Unlike the other 3 built services, this one had no `image:` tag at
+    # all until now - fine for a local `docker compose build`, but a
+    # pull-only deployment (e.g. ts-1-boudica, source-never-leaves-the-
+    # build-machine policy - see project-myboudica-integration-plan-20260905
+    # Phase 6) needs a real registry path to pull from, same as
+    # nextcloud/collabora/signaling below.
+    image: git.omniindex.io:5050/omniindex/boudica-collabora/janus:latest
     build:
       context: ../../vendor/nextcloud-spreed-signaling/docker/janus
     # Janus does a startup self-test STUN request against the configured
@@ -151,6 +184,13 @@ services:
     depends_on:
       eturnal:
         condition: service_healthy
+    # Lets Janus reach its own host (where eturnal actually listens, via
+    # `network_mode: host`) without going through the box's real public IP
+    # - see janus.jcfg's own comment on why that specifically fails via
+    # hairpin NAT on a box like ts-1-boudica where the public IP isn't
+    # bound to a local interface.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./generated/janus/janus.jcfg:/usr/local/etc/janus/janus.jcfg:ro
       - janus_recordings:/opt/janus/share/janus/recordings
@@ -164,10 +204,14 @@ services:
     depends_on: [janus]
     volumes:
       - ./generated/signaling/server.conf:/config/server.conf:ro
-    # No host port publish - nginx reaches this over the internal Docker
-    # network by service name (see nginx/default.conf's talk. vhost), and a
-    # host-published 8081 collides with anything else on the box already
-    # using that port (e.g. boudica_slm's own Keycloak default).
+    # Loopback-only, always published (see the nginx service's own comment
+    # below). Deliberately a distinct host-side port from the container's
+    # own 8081 (set in server.conf's [http] listen) - 8081 is already taken
+    # on a box running boudica_slm's own multiuser stack (its Keycloak's
+    # loopback binding), and host-side ports are a completely separate
+    # namespace from container-internal ones regardless.
+    ports:
+      - "127.0.0.1:${BOUDICA_SIGNALING_LOCAL_PORT:-8084}:8081"
     restart: unless-stopped
 
   eturnal:
@@ -204,10 +248,32 @@ services:
     environment:
       NEXTCLOUD_URL: https://${BOUDICA_DOMAIN}
       JWT_SECRET_KEY: ${WHITEBOARD_JWT_SECRET}
+    # Loopback-only, always published (see the nginx service's own comment
+    # below).
+    ports:
+      - "127.0.0.1:${BOUDICA_WHITEBOARD_LOCAL_PORT:-8085}:3002"
     restart: unless-stopped
 
+  # profiles: ["bundled-proxy"] - this service is this stack's OWN
+  # TLS-terminating reverse proxy, for a box with no pre-existing one (a
+  # sovereign/on-prem trial, or this dev box). A deployment that already
+  # runs a host-level reverse proxy in front of its public domain (e.g.
+  # ts-1-boudica's Apache, already fronting boudi.ca/boudica.myboudica.com -
+  # see project-myboudica-integration-plan-20260905's Phase 1) does NOT
+  # start this service at all - that host proxy gains its own ProxyPass/
+  # vhost blocks pointing at the loopback ports published above instead
+  # (nextcloud/collabora/signaling/whiteboard), avoiding a redundant second
+  # reverse-proxy hop and a second place to manage TLS certs.
+  #
+  # setup.sh writes `COMPOSE_PROFILES=bundled-proxy` into .env for the
+  # self-contained case (the default) so plain `docker compose up/down/ps`
+  # commands keep including this service automatically with no flags to
+  # remember - Compose reads COMPOSE_PROFILES from .env on its own. The
+  # external-proxy case leaves it unset, so this service is excluded by
+  # default from every compose command in that directory.
   nginx:
     image: nginx:latest
+    profiles: ["bundled-proxy"]
     depends_on: [nextcloud, collabora, signaling, whiteboard]
     volumes:
       - ./generated/nginx:/etc/nginx/conf.d:ro

@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 # Boudica-Nextcloud-Collabora integration stack installer.
 #
-# Builds every image locally (no registry pull-only mode yet, unlike
-# boudica_slm's own product_templates/multiuser - this stack is new and has
-# no pushed images yet). Safe to re-run: regenerates config from the
-# templates each time, so config changes just mean re-running this.
+# Builds every image locally by default (right for a sovereign/on-prem
+# trial or dev box). A box that shouldn't have build tooling/source on it
+# (e.g. ts-1-boudica, matching boudica_slm's own multiuser stack's
+# pull-only conversion - see project-myboudica-integration-plan-20260905's
+# Phase 6) can answer the pull-only prompt below instead - only the
+# `image:` tags in docker-compose.yml are needed then, not the Dockerfiles/
+# vendored build contexts (nextcloud/Dockerfile, collabora/Dockerfile,
+# signaling/Dockerfile, ../../vendor/nextcloud-spreed-signaling/) at all.
+# Safe to re-run either way: regenerates config from the templates each
+# time, so config changes just mean re-running this.
 
 set -euo pipefail
 
@@ -67,6 +73,56 @@ BOUDICA_HTTP_PORT="${BOUDICA_HTTP_PORT:-80}"
 read -rp "HTTPS port [443]: " BOUDICA_HTTPS_PORT
 BOUDICA_HTTPS_PORT="${BOUDICA_HTTPS_PORT:-443}"
 
+# Two supported deployment shapes. Self-contained (default): this stack's
+# own bundled `nginx` service terminates TLS and answers on the ports above
+# directly - right for a sovereign/on-prem trial or any box with nothing
+# else already listening on 80/443. External-proxy: a host-level reverse
+# proxy already fronts this domain (e.g. ts-1-boudica's Apache, already
+# terminating TLS for boudi.ca/boudica.myboudica.com with real Let's
+# Encrypt certs) - that proxy gets new ProxyPass/vhost blocks pointing at
+# this stack's own loopback-bound ports instead, and this stack's bundled
+# nginx never starts at all (see docker-compose.yml's nginx service
+# comment). Answering yes here does NOT configure that host proxy itself -
+# it only stops this stack from fighting it for ports 80/443 and TLS
+# ownership; the proxy-side config is a separate, later step.
+read -rp "Does this box already have its own reverse proxy (Apache/nginx) that will \
+terminate TLS for ${BOUDICA_DOMAIN}? [y/N]: " EXTERNAL_PROXY_ANSWER
+case "${EXTERNAL_PROXY_ANSWER,,}" in
+    y|yes) EXTERNAL_PROXY="true" ;;
+    *)     EXTERNAL_PROXY="false" ;;
+esac
+
+if [[ "$EXTERNAL_PROXY" == "true" ]]; then
+    read -rp "Loopback port for Nextcloud [8082]: " BOUDICA_NEXTCLOUD_LOCAL_PORT
+    BOUDICA_NEXTCLOUD_LOCAL_PORT="${BOUDICA_NEXTCLOUD_LOCAL_PORT:-8082}"
+    read -rp "Loopback port for Collabora [8083]: " BOUDICA_COLLABORA_LOCAL_PORT
+    BOUDICA_COLLABORA_LOCAL_PORT="${BOUDICA_COLLABORA_LOCAL_PORT:-8083}"
+    read -rp "Loopback port for the Talk signaling server [8084]: " BOUDICA_SIGNALING_LOCAL_PORT
+    BOUDICA_SIGNALING_LOCAL_PORT="${BOUDICA_SIGNALING_LOCAL_PORT:-8084}"
+    read -rp "Loopback port for Whiteboard [8085]: " BOUDICA_WHITEBOARD_LOCAL_PORT
+    BOUDICA_WHITEBOARD_LOCAL_PORT="${BOUDICA_WHITEBOARD_LOCAL_PORT:-8085}"
+else
+    BOUDICA_NEXTCLOUD_LOCAL_PORT="8082"
+    BOUDICA_COLLABORA_LOCAL_PORT="8083"
+    BOUDICA_SIGNALING_LOCAL_PORT="8084"
+    BOUDICA_WHITEBOARD_LOCAL_PORT="8085"
+fi
+
+# Pull-only: this box only needs the `image:` tags in docker-compose.yml -
+# no Dockerfiles, no vendored signaling source tree, no build tooling. Right
+# for a box that shouldn't have build machinery/source beyond the 4
+# bind-mounted Boudica Nextcloud apps (which are source, by design, on any
+# box - see docker-compose.yml's own comment on why they're bind-mounted
+# rather than baked in). Answering no (the default) preserves the original
+# "build everything locally" behavior for a dev/trial box with no pushed
+# images to pull.
+read -rp "Pull pre-built images from the registry instead of building them on this box? \
+[y/N]: " PULL_ONLY_ANSWER
+case "${PULL_ONLY_ANSWER,,}" in
+    y|yes) PULL_ONLY="true" ;;
+    *)     PULL_ONLY="false" ;;
+esac
+
 # Defaults to THIS box's own co-located boudica_slm instance (nginx
 # proxies /api/boudica/ to it - see nginx/default.conf) rather than the
 # external boudi.ca SaaS - a sovereign/on-prem install should stay
@@ -76,6 +132,14 @@ BOUDICA_HTTPS_PORT="${BOUDICA_HTTPS_PORT:-443}"
 DEFAULT_API_ENDPOINT="https://${BOUDICA_DOMAIN}:${BOUDICA_HTTPS_PORT}/api/boudica/chat"
 read -rp "Boudica inference API endpoint [${DEFAULT_API_ENDPOINT}]: " BOUDICA_API_ENDPOINT
 BOUDICA_API_ENDPOINT="${BOUDICA_API_ENDPOINT:-$DEFAULT_API_ENDPOINT}"
+# Stashed because `source .env` below unconditionally reassigns this same
+# variable name from whatever was persisted on a previous run, silently
+# discarding the answer just given here - confirmed live 2026-09-05 as the
+# actual reason re-running setup.sh to fix a wrong BOUDICA_API_ENDPOINT
+# never took effect (this deployment kept shipping the widget/app config
+# pointing at the external boudi.ca SaaS regardless of what was typed at
+# this prompt, every single re-run).
+BOUDICA_API_ENDPOINT_PROMPTED="$BOUDICA_API_ENDPOINT"
 # Derive the bare origin (scheme://host) for the CSP allowlist - connect-src
 # etc. need just the origin, not the full endpoint path.
 BOUDICA_API_ORIGIN="$(echo "$BOUDICA_API_ENDPOINT" | sed -E 's#^(https?://[^/]+).*#\1#')"
@@ -101,6 +165,13 @@ WHISPER_MODEL="${WHISPER_MODEL:-base}"
 
 log "[3/7] Generating local credentials"
 gen_secret() { openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24; }
+# occ talk:bot:install requires a 40-128 char secret - longer than the 24-char
+# gen_secret() used elsewhere, so it gets its own generator.
+gen_bot_secret() { openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 48; }
+# Matches boudislm.api_keys' own bdk_<60 lowercase hex> format
+# (is_valid_api_key_format() in slm_cgi_utils.cpp) - not the generic
+# gen_secret() shape.
+gen_talkbot_key() { echo "bdk_$(openssl rand -hex 30)"; }
 
 if [[ ! -f .env ]]; then
     cat > .env <<EOF
@@ -114,12 +185,20 @@ TALK_BACKEND_SECRET=$(gen_secret)
 TURN_SHARED_SECRET=$(gen_secret)
 JANUS_TURN_PASSWORD=$(gen_secret)
 WHITEBOARD_JWT_SECRET=$(gen_secret)
+TALK_BOT_SECRET=$(gen_bot_secret)
+BOUDICA_TALKBOT_API_KEY=$(gen_talkbot_key)
 TURN_PUBLIC_IP=${TURN_PUBLIC_IP}
 BOUDICA_API_ENDPOINT=${BOUDICA_API_ENDPOINT}
 SMTP_RELAYHOST=${SMTP_RELAYHOST}
 WHISPER_MODEL=${WHISPER_MODEL}
 BOUDICA_HTTP_PORT=${BOUDICA_HTTP_PORT}
 BOUDICA_HTTPS_PORT=${BOUDICA_HTTPS_PORT}
+EXTERNAL_PROXY=${EXTERNAL_PROXY}
+BOUDICA_NEXTCLOUD_LOCAL_PORT=${BOUDICA_NEXTCLOUD_LOCAL_PORT}
+BOUDICA_COLLABORA_LOCAL_PORT=${BOUDICA_COLLABORA_LOCAL_PORT}
+BOUDICA_SIGNALING_LOCAL_PORT=${BOUDICA_SIGNALING_LOCAL_PORT}
+BOUDICA_WHITEBOARD_LOCAL_PORT=${BOUDICA_WHITEBOARD_LOCAL_PORT}
+PULL_ONLY=${PULL_ONLY}
 EOF
     echo "Generated all secrets fresh (stored in .env - keep this private)."
     echo "Nextcloud admin password: $(grep NEXTCLOUD_ADMIN_PASSWORD .env | cut -d= -f2)"
@@ -128,10 +207,53 @@ else
 fi
 # shellcheck disable=SC1091
 source .env
-# Re-derive these every run even when .env already existed, in case the
-# admin re-ran setup.sh specifically to change BOUDICA_API_ENDPOINT.
+# The prompt's answer always wins over whatever source .env just loaded -
+# see BOUDICA_API_ENDPOINT_PROMPTED's own comment above for why this is
+# needed at all. Also persists back into .env itself (not just the
+# in-memory shell var) so a value corrected here doesn't drift back to the
+# stale one on the *next* re-run too.
+BOUDICA_API_ENDPOINT="$BOUDICA_API_ENDPOINT_PROMPTED"
+if grep -q '^BOUDICA_API_ENDPOINT=' .env; then
+    sed -i "s#^BOUDICA_API_ENDPOINT=.*#BOUDICA_API_ENDPOINT=${BOUDICA_API_ENDPOINT}#" .env
+else
+    echo "BOUDICA_API_ENDPOINT=${BOUDICA_API_ENDPOINT}" >> .env
+fi
 BOUDICA_API_ORIGIN="$(echo "$BOUDICA_API_ENDPOINT" | sed -E 's#^(https?://[^/]+).*#\1#')"
 BOUDICA_API_BASE="$(echo "$BOUDICA_API_ENDPOINT" | sed -E 's#/chat/?$##')"
+
+# Same "prompt wins over a stale .env" pattern as BOUDICA_API_ENDPOINT above -
+# EXTERNAL_PROXY controls which reverse-proxy mode this run uses (see the
+# prompt above and docker-compose.yml's nginx service comment), so a re-run
+# meant to actually switch modes must not silently keep the old value.
+persist_env_var() {
+    local key="$1" value="$2"
+    if grep -q "^${key}=" .env; then
+        sed -i "s#^${key}=.*#${key}=${value}#" .env
+    else
+        echo "${key}=${value}" >> .env
+    fi
+}
+persist_env_var EXTERNAL_PROXY "$EXTERNAL_PROXY"
+persist_env_var PULL_ONLY "$PULL_ONLY"
+persist_env_var BOUDICA_NEXTCLOUD_LOCAL_PORT "$BOUDICA_NEXTCLOUD_LOCAL_PORT"
+persist_env_var BOUDICA_COLLABORA_LOCAL_PORT "$BOUDICA_COLLABORA_LOCAL_PORT"
+persist_env_var BOUDICA_SIGNALING_LOCAL_PORT "$BOUDICA_SIGNALING_LOCAL_PORT"
+persist_env_var BOUDICA_WHITEBOARD_LOCAL_PORT "$BOUDICA_WHITEBOARD_LOCAL_PORT"
+
+# Compose reads both of these straight out of .env on its own, for every
+# subsequent plain `docker compose <cmd>` run in this directory - no -f/
+# --profile flags to remember afterward. Self-contained (default): activates
+# the bundled-proxy profile so nginx starts; external-proxy: leaves the
+# profile unset (nginx excluded) and layers the extra_hosts override on top.
+if [[ "$EXTERNAL_PROXY" == "true" ]]; then
+    persist_env_var COMPOSE_PROFILES ""
+    persist_env_var COMPOSE_FILE "docker-compose.yml:docker-compose.external-proxy.yml"
+else
+    persist_env_var COMPOSE_PROFILES "bundled-proxy"
+    persist_env_var COMPOSE_FILE "docker-compose.yml"
+fi
+# shellcheck disable=SC1091
+source .env
 
 # --- 3. Render templates into generated/ -------------------------------------
 
@@ -151,8 +273,15 @@ sed -e "s#__PUBLIC_IP__#${TURN_PUBLIC_IP}#g" \
     -e "s#__JANUS_TURN_PASSWORD__#${JANUS_TURN_PASSWORD}#g" \
     janus/janus.jcfg > generated/janus/janus.jcfg
 
+# [backend] uses allowall=true, not a domain allowlist - see the comment
+# in signaling/server.conf itself for why (the "allowed" key that used to
+# be rendered here isn't real for the deployed signaling server binary,
+# and silently registered zero trusted backends - every real Nextcloud
+# request got rejected with "Authentication check failed" regardless of a
+# correct HMAC secret). Confirmed live 2026-09-08, superseding an earlier
+# incomplete 2026-09-05 fix that only addressed a missing port on that
+# line. No __NEXTCLOUD_DOMAIN__ substitution needed here anymore.
 sed -e "s#__SESSIONS_HASHKEY__#${SESSIONS_HASHKEY}#g" \
-    -e "s#__NEXTCLOUD_DOMAIN__#${BOUDICA_DOMAIN}#g" \
     -e "s#__TALK_BACKEND_SECRET__#${TALK_BACKEND_SECRET}#g" \
     -e "s#__TURN_HOST__#${TURN_PUBLIC_IP}#g" \
     -e "s#__TURN_SHARED_SECRET__#${TURN_SHARED_SECRET}#g" \
@@ -163,44 +292,53 @@ sed -e "s#__TURN_SHARED_SECRET__#${TURN_SHARED_SECRET}#g" \
     -e "s#__JANUS_TURN_PASSWORD__#${JANUS_TURN_PASSWORD}#g" \
     eturnal/eturnal.yml > generated/eturnal/eturnal.yml
 
-sed -e "s#__BOUDICA_DOMAIN__#${BOUDICA_DOMAIN}#g" \
-    -e "s#__BOUDICA_HTTP_PORT__#${BOUDICA_HTTP_PORT}#g" \
-    -e "s#__BOUDICA_HTTPS_PORT__#${BOUDICA_HTTPS_PORT}#g" \
-    nginx/default.conf > generated/nginx/default.conf
+if [[ "$EXTERNAL_PROXY" == "true" ]]; then
+    echo "External-proxy mode: skipping this stack's own nginx config/TLS cert generation \
+entirely - a host-level reverse proxy already terminates TLS for ${BOUDICA_DOMAIN} and \
+will be given its own ProxyPass/vhost blocks pointing at this stack's loopback ports \
+(Nextcloud :${BOUDICA_NEXTCLOUD_LOCAL_PORT}, Collabora :${BOUDICA_COLLABORA_LOCAL_PORT}, \
+signaling :${BOUDICA_SIGNALING_LOCAL_PORT}, Whiteboard :${BOUDICA_WHITEBOARD_LOCAL_PORT}) \
+as a separate step - see project-myboudica-integration-plan-20260905's later phases."
+else
+    sed -e "s#__BOUDICA_DOMAIN__#${BOUDICA_DOMAIN}#g" \
+        -e "s#__BOUDICA_HTTP_PORT__#${BOUDICA_HTTP_PORT}#g" \
+        -e "s#__BOUDICA_HTTPS_PORT__#${BOUDICA_HTTPS_PORT}#g" \
+        nginx/default.conf > generated/nginx/default.conf
 
-# TLS: self-signed by default, generated fresh here - no public DNS or CA
-# dependency, so this works unmodified for a LAN/trial box with no real
-# domain. Browsers show a one-time "not trusted" warning on first visit,
-# same as any self-hosted/LAN appliance. HTTPS itself is NOT optional even
-# for local use though - getUserMedia/RTCPeerConnection (Talk's camera/mic
-# access) only work in a browser "secure context", which means HTTPS or
-# exactly `localhost` - plain HTTP would silently break calls for anyone
-# not sitting at the server itself.
-#
-# One cert covers all three names via Subject Alternative Names, copied
-# into each name's own directory since nginx's config references them
-# separately. A real deployment with real public DNS can drop actual
-# Let's Encrypt (or other CA) certs into these same paths instead - nginx
-# doesn't care how they got there, and re-running setup.sh never
-# overwrites a cert that's already present.
-CERT_NAMES=("$BOUDICA_DOMAIN" "talk.$BOUDICA_DOMAIN" "whiteboard.$BOUDICA_DOMAIN")
-if [[ ! -f "generated/nginx/certs/${CERT_NAMES[0]}/fullchain.pem" ]]; then
-    echo "Generating a self-signed TLS certificate (covers: ${CERT_NAMES[*]})..."
-    SAN="subjectAltName=$(printf 'DNS:%s,' "${CERT_NAMES[@]}" | sed 's/,$//')"
-    TMP_CERT_DIR="$(mktemp -d)"
-    openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
-        -keyout "$TMP_CERT_DIR/privkey.pem" -out "$TMP_CERT_DIR/fullchain.pem" \
-        -subj "/CN=${CERT_NAMES[0]}" -addext "$SAN" >/dev/null 2>&1
-    for name in "${CERT_NAMES[@]}"; do
-        mkdir -p "generated/nginx/certs/$name"
-        cp "$TMP_CERT_DIR/fullchain.pem" "$TMP_CERT_DIR/privkey.pem" "generated/nginx/certs/$name/"
-    done
-    rm -rf "$TMP_CERT_DIR"
-    echo "Self-signed cert generated (10-year validity). Replace with a real CA cert \
+    # TLS: self-signed by default, generated fresh here - no public DNS or CA
+    # dependency, so this works unmodified for a LAN/trial box with no real
+    # domain. Browsers show a one-time "not trusted" warning on first visit,
+    # same as any self-hosted/LAN appliance. HTTPS itself is NOT optional even
+    # for local use though - getUserMedia/RTCPeerConnection (Talk's camera/mic
+    # access) only work in a browser "secure context", which means HTTPS or
+    # exactly `localhost` - plain HTTP would silently break calls for anyone
+    # not sitting at the server itself.
+    #
+    # One cert covers all three names via Subject Alternative Names, copied
+    # into each name's own directory since nginx's config references them
+    # separately. A real deployment with real public DNS can drop actual
+    # Let's Encrypt (or other CA) certs into these same paths instead - nginx
+    # doesn't care how they got there, and re-running setup.sh never
+    # overwrites a cert that's already present.
+    CERT_NAMES=("$BOUDICA_DOMAIN" "talk.$BOUDICA_DOMAIN" "whiteboard.$BOUDICA_DOMAIN")
+    if [[ ! -f "generated/nginx/certs/${CERT_NAMES[0]}/fullchain.pem" ]]; then
+        echo "Generating a self-signed TLS certificate (covers: ${CERT_NAMES[*]})..."
+        SAN="subjectAltName=$(printf 'DNS:%s,' "${CERT_NAMES[@]}" | sed 's/,$//')"
+        TMP_CERT_DIR="$(mktemp -d)"
+        openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
+            -keyout "$TMP_CERT_DIR/privkey.pem" -out "$TMP_CERT_DIR/fullchain.pem" \
+            -subj "/CN=${CERT_NAMES[0]}" -addext "$SAN" >/dev/null 2>&1
+        for name in "${CERT_NAMES[@]}"; do
+            mkdir -p "generated/nginx/certs/$name"
+            cp "$TMP_CERT_DIR/fullchain.pem" "$TMP_CERT_DIR/privkey.pem" "generated/nginx/certs/$name/"
+        done
+        rm -rf "$TMP_CERT_DIR"
+        echo "Self-signed cert generated (10-year validity). Replace with a real CA cert \
 per-name under generated/nginx/certs/<name>/ any time - re-running setup.sh won't \
 touch a cert that's already there."
-else
-    echo "Existing certs found under generated/nginx/certs/ - leaving them as-is."
+    else
+        echo "Existing certs found under generated/nginx/certs/ - leaving them as-is."
+    fi
 fi
 
 # --- 4. Create this stack's database in the shared Postgres -----------------
@@ -267,32 +405,82 @@ echo
 [[ -n "$BOUDICA_SLM_KEYCLOAK_ADMIN_PASSWORD" ]] || die "That password is required to register this stack's Keycloak client."
 
 NEXTCLOUD_REDIRECT_URI="https://${BOUDICA_DOMAIN}:${BOUDICA_HTTPS_PORT}/apps/boudicaai/keycloak/callback"
+# Wildcarded, not an exact match - intercept-logout.js's post_logout_redirect_uri
+# is Nextcloud's own real "Log out" link (carries a per-session CSRF
+# requesttoken query param that changes every page load), not a fixed
+# URL, so Keycloak's allowlist has to match the whole /logout* range
+# rather than one exact string.
+NEXTCLOUD_LOGOUT_REDIRECT_URI="https://${BOUDICA_DOMAIN}:${BOUDICA_HTTPS_PORT}/logout*"
 
+# boudica_slm's Keycloak container always sets KC_HTTP_RELATIVE_PATH=/kc
+# (see that project's product_templates/multiuser/docker-compose.yml and
+# its boudica-le-ssl.conf's own hardcoded /kc ProxyPass) - every internal,
+# container-to-container call below needs that same /kc prefix or it 404s.
+# Confirmed live 2026-09-06: without it, every call below silently got a
+# 404 HTML error page back instead of real JSON, which then got used AS a
+# bearer token / client UUID by the following calls - the garbage token
+# itself didn't fail (curl doesn't error on a 404 body), but the resulting
+# malformed URL to a LATER call (a literal "<html>...</html>" string
+# embedded in a URL path) crashed curl outright with "URL malformed" (exit
+# 3), taking the whole script down via set -e with no diagnostic message
+# printed anywhere before that point - very hard to debug blind. Also
+# hardened the validation below to actually catch this class of failure
+# with a clear error instead of silently propagating garbage forward.
 KC_ADMIN_TOKEN="$(docker run --rm --network boudica_shared curlimages/curl:latest -s \
     -d "grant_type=password" -d "client_id=admin-cli" -d "username=admin" \
     -d "password=${BOUDICA_SLM_KEYCLOAK_ADMIN_PASSWORD}" \
-    http://keycloak:8080/realms/master/protocol/openid-connect/token \
+    http://keycloak:8080/kc/realms/master/protocol/openid-connect/token \
     | sed -E 's/.*"access_token":"([^"]+)".*/\1/')"
-[[ -n "$KC_ADMIN_TOKEN" && "$KC_ADMIN_TOKEN" != *'{'* ]] || \
-    die "Could not authenticate to boudica_slm's Keycloak admin API - check the admin password."
+[[ -n "$KC_ADMIN_TOKEN" && "$KC_ADMIN_TOKEN" != *'{'* && "$KC_ADMIN_TOKEN" != *'<'* ]] || \
+    die "Could not authenticate to boudica_slm's Keycloak admin API - check the admin \
+password and that its Keycloak is actually reachable as 'keycloak' on boudica_shared \
+(got back: ${KC_ADMIN_TOKEN})."
 
 EXISTING_CLIENT="$(docker run --rm --network boudica_shared curlimages/curl:latest -s \
     -H "Authorization: Bearer ${KC_ADMIN_TOKEN}" \
-    "http://keycloak:8080/admin/realms/boudica/clients?clientId=boudica-nextcloud")"
+    "http://keycloak:8080/kc/admin/realms/boudica/clients?clientId=boudica-nextcloud")"
+[[ "$EXISTING_CLIENT" != *'<'* ]] || \
+    die "Unexpected (non-JSON) response listing Keycloak clients: ${EXISTING_CLIENT}"
 if [[ "$EXISTING_CLIENT" == "[]" ]]; then
     docker run --rm --network boudica_shared curlimages/curl:latest -s -o /dev/null \
         -H "Authorization: Bearer ${KC_ADMIN_TOKEN}" -H "Content-Type: application/json" \
-        -X POST "http://keycloak:8080/admin/realms/boudica/clients" \
-        -d "{\"clientId\":\"boudica-nextcloud\",\"name\":\"Boudica Nextcloud Login\",\"enabled\":true,\"publicClient\":true,\"protocol\":\"openid-connect\",\"standardFlowEnabled\":true,\"implicitFlowEnabled\":false,\"directAccessGrantsEnabled\":false,\"serviceAccountsEnabled\":false,\"redirectUris\":[\"${NEXTCLOUD_REDIRECT_URI}\"],\"webOrigins\":[\"https://${BOUDICA_DOMAIN}:${BOUDICA_HTTPS_PORT}\"],\"attributes\":{\"pkce.code.challenge.method\":\"S256\"}}"
+        -X POST "http://keycloak:8080/kc/admin/realms/boudica/clients" \
+        -d "{\"clientId\":\"boudica-nextcloud\",\"name\":\"Boudica Nextcloud Login\",\"enabled\":true,\"publicClient\":true,\"protocol\":\"openid-connect\",\"standardFlowEnabled\":true,\"implicitFlowEnabled\":false,\"directAccessGrantsEnabled\":false,\"serviceAccountsEnabled\":false,\"redirectUris\":[\"${NEXTCLOUD_REDIRECT_URI}\"],\"webOrigins\":[\"https://${BOUDICA_DOMAIN}:${BOUDICA_HTTPS_PORT}\"],\"attributes\":{\"pkce.code.challenge.method\":\"S256\",\"post.logout.redirect.uris\":\"${NEXTCLOUD_LOGOUT_REDIRECT_URI}\"}}"
     echo "Created Keycloak client 'boudica-nextcloud' (redirect: ${NEXTCLOUD_REDIRECT_URI})."
 else
-    echo "Keycloak client 'boudica-nextcloud' already exists - leaving it as-is."
+    # Self-healing re-run for an install created before
+    # post.logout.redirect.uris existed in this script (2026-09-04) -
+    # PUTs it onto the already-existing client rather than skipping
+    # entirely, so re-running setup.sh after an update actually picks up
+    # new client attributes like this one.
+    CLIENT_UUID="$(echo "$EXISTING_CLIENT" | sed -E 's/.*"id":"([^"]+)".*/\1/')"
+    docker run --rm --network boudica_shared curlimages/curl:latest -s -o /dev/null \
+        -H "Authorization: Bearer ${KC_ADMIN_TOKEN}" -H "Content-Type: application/json" \
+        -X PUT "http://keycloak:8080/kc/admin/realms/boudica/clients/${CLIENT_UUID}" \
+        -d "{\"attributes\":{\"pkce.code.challenge.method\":\"S256\",\"post.logout.redirect.uris\":\"${NEXTCLOUD_LOGOUT_REDIRECT_URI}\"}}"
+    echo "Keycloak client 'boudica-nextcloud' already exists - refreshed its logout-redirect attribute."
 fi
 
 # --- 5. Bring the stack up ----------------------------------------------------
 
-log "[6/7] Building and starting containers"
-docker compose build
+if [[ "$PULL_ONLY" == "true" ]]; then
+    log "[6/7] Pulling images and starting containers"
+    # Non-fatal on failure: this registry has a documented history of
+    # intermittent outages (see boudica-registry-push-failure-20260903 in
+    # memory) - if the required images are already present locally (e.g.
+    # pulled in advance via a bridge/workaround registry while the primary
+    # one was down), Compose's default pull policy for `up` only re-pulls
+    # what's actually missing, so a failed *explicit* pull here doesn't
+    # necessarily mean the install can't proceed. `docker compose up -d`
+    # below will fail clearly and specifically if an image is genuinely
+    # unavailable either way.
+    docker compose pull || warn "docker compose pull failed - continuing in case the \
+required images are already cached locally; 'docker compose up -d' below will fail \
+clearly if any are genuinely missing."
+else
+    log "[6/7] Building and starting containers"
+    docker compose build
+fi
 docker compose up -d redis
 docker compose up -d
 
@@ -329,6 +517,26 @@ docker compose exec -u www-data -T nextcloud php occ app:enable boudicadashboard
 docker compose exec -u www-data -T nextcloud php occ config:app:set boudicaai api_endpoint \
     --value="${BOUDICA_API_ENDPOINT}"
 
+# BoudicaService.php (used by TalkBotInvokeListener for every @boudica Talk
+# mention) reads api_key/user_id as APP-WIDE config (getAppValue, not
+# per-user) - a dedicated service-account credential the bot acts as,
+# separate from any individual Nextcloud user's own key. Nothing ever
+# provisioned this before, so every @boudica reply failed with a generic
+# "Sorry, I couldn't generate a response right now." (confirmed live
+# 2026-09-05) while the real cause (empty api_key/user_id reaching the
+# backend's own auth check) only showed up in the Nextcloud log. Mints a
+# real boudislm.api_keys row for a dedicated talkbot@boudica.local identity,
+# same pattern as the existing verify-bot/distill-bot service accounts -
+# idempotent via ON CONFLICT, and the key itself is stable across re-runs
+# since BOUDICA_TALKBOT_API_KEY only gets generated once into .env.
+docker run --rm --network boudica_shared -e PGPASSWORD="$BOUDICA_SLM_DBA_PASSWORD" \
+    postgres:17 psql -h postgres -U boudislm_dba -d boudislm -v ON_ERROR_STOP=0 -c \
+    "INSERT INTO boudislm.api_keys (api_key, key_name, user_id, is_active) VALUES ('${BOUDICA_TALKBOT_API_KEY}', 'MyBoudica Talk bot service account', 'talkbot@boudica.local', true) ON CONFLICT (api_key) DO NOTHING;"
+docker compose exec -u www-data -T nextcloud php occ config:app:set boudicaai api_key \
+    --value="${BOUDICA_TALKBOT_API_KEY}"
+docker compose exec -u www-data -T nextcloud php occ config:app:set boudicaai user_id \
+    --value="talkbot@boudica.local"
+
 # KeycloakLoginController.php reads these to build the browser-facing
 # Keycloak redirect (login()) - it's the PUBLIC Keycloak URL, unlike the
 # internal http://keycloak:8080 the controller uses for its own
@@ -357,6 +565,26 @@ docker compose exec -u www-data -T nextcloud php occ config:app:set richdocument
     --value="https://${BOUDICA_DOMAIN}:${BOUDICA_HTTPS_PORT}"
 docker compose exec -u www-data -T nextcloud php occ richdocuments:activate-config || true
 
+# Default "My Boudica" branding (logo/header/background/favicon + name/
+# slogan/URLs/colors) - pulled from the live eu1.myboudica.com install so a
+# fresh deployment looks the same out of the box instead of stock
+# Nextcloud branding until someone redoes it by hand. Text values go
+# through occ (theming:config has no image support); the 4 images are
+# applied by apply-theming.php, baked into the image at build time (see
+# nextcloud/Dockerfile) - calls the same ImageManager::updateImage()
+# ThemingController::uploadImage() itself uses, so no HTTP/admin-session
+# login is needed to drive the real upload endpoint. Safe to re-run:
+# occ theming:config just overwrites, and updateImage() deletes the old
+# image before writing the new one.
+docker compose exec -u www-data -T nextcloud php occ theming:config name "My Boudica"
+docker compose exec -u www-data -T nextcloud php occ theming:config slogan "Own Your Own Intelligence"
+docker compose exec -u www-data -T nextcloud php occ theming:config url "https://omniindex.io"
+docker compose exec -u www-data -T nextcloud php occ theming:config imprintUrl "https://www.omniindex.io/legal/"
+docker compose exec -u www-data -T nextcloud php occ theming:config privacyUrl "https://www.omniindex.io/legal/"
+docker compose exec -u www-data -T nextcloud php occ theming:config primary_color "#D3A54A"
+docker compose exec -u www-data -T nextcloud php occ theming:config background_color "#f1ede4"
+docker compose exec -u www-data -T nextcloud php /opt/boudica-theming/apply-theming.php
+
 # Talk's own signaling/STUN/TURN registration - all three ARE occ-scriptable
 # (talk:signaling:add/talk:stun:add/talk:turn:add), no admin-UI step needed.
 # The TURN secret must match eturnal's own `secret:` (generated/eturnal/eturnal.yml)
@@ -373,5 +601,25 @@ docker compose exec -u www-data -T nextcloud php occ talk:signaling:add \
 docker compose exec -u www-data -T nextcloud php occ talk:stun:add "${TURN_PUBLIC_IP}:3478" || true
 docker compose exec -u www-data -T nextcloud php occ talk:turn:add turn,turns "${TURN_PUBLIC_IP}" udp,tcp \
     --secret="${TURN_SHARED_SECRET}" || true
+
+# Registers boudicaai's TalkBotInvokeListener (lib/Listener/TalkBotInvokeListener.php,
+# already wired to BotInvokeEvent in Application.php) as an actual Talk bot -
+# without this, "No bots are installed on this server" shows in Talk's admin
+# settings and every @boudica mention is silently dropped (Talk never
+# dispatches BotInvokeEvent for a bot it doesn't know exists). Confirmed live
+# 2026-09-05. --feature=event (not webhook/response/reaction - occ rejects
+# combining those with event, they're mutually exclusive): the listener
+# consumes posted messages via the local BotInvokeEvent and replies via
+# $event->addAnswer() regardless, so Talk never actually calls `url` over
+# HTTP - it's only required as a stable, non-empty identifier.
+# nextcloudapp://<app-id> is the established Nextcloud convention for this
+# in-process/event-only bot shape (matches what first-party app-provided
+# bots use), not a real endpoint. Re-running with the same name/secret/url
+# is idempotent - Talk derives the bot's id from a hash of secret+url, so
+# this updates the existing row rather than creating a duplicate.
+docker compose exec -u www-data -T nextcloud php occ talk:bot:install \
+    "Boudica" "${TALK_BOT_SECRET}" "nextcloudapp://boudicaai" \
+    "Boudica AI assistant - mention @boudica in any conversation" \
+    --feature=event || true
 
 echo "Stack is up and fully configured - no manual admin-UI steps required."

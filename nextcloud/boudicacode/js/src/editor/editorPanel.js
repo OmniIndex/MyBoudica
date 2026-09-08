@@ -84,6 +84,7 @@
             this._onFileClosed = this._onFileClosed.bind(this);
             this._onDirtyOrSaved = this._onDirtyOrSaved.bind(this);
             this._onFileExternallyUpdated = this._onFileExternallyUpdated.bind(this);
+            this._onFileRenamed = this._onFileRenamed.bind(this);
 
             bus.on(EVENTS.FILE_OPEN_REQUESTED, this._onFileOpenRequested);
             bus.on(EVENTS.FILE_OPENED, this._onFileOpened);
@@ -92,6 +93,7 @@
             bus.on(EVENTS.FILE_DIRTY, this._onDirtyOrSaved);
             bus.on(EVENTS.FILE_EXTERNALLY_UPDATED, this._onFileExternallyUpdated);
             bus.on(EVENTS.FILE_SAVED, this._onDirtyOrSaved);
+            bus.on(EVENTS.FILE_RENAMED, this._onFileRenamed);
         }
 
         async init() {
@@ -143,6 +145,7 @@
                     <div class="bc-editor-tabs" data-role="tabs"></div>
                     <div class="bc-editor-toolbar">
                         <button data-action="new-project" title="Create a new project">+ New Project</button>
+                        <button data-action="save" title="Save the current file (Ctrl/Cmd+S)">&#128190; Save</button>
                         <button data-action="compile-check" title="Syntax/compile check the current file">&#9654; Check</button>
                     </div>
                     <div class="bc-editor-body">
@@ -154,10 +157,28 @@
             this.tabsEl = this.mountEl.querySelector('[data-role="tabs"]');
             this.monacoMountEl = this.mountEl.querySelector('[data-role="monaco-mount"]');
             this.homeContentEl = this.mountEl.querySelector('[data-role="home-content"]');
+            this.saveBtn = this.mountEl.querySelector('[data-action="save"]');
             this.mountEl.querySelector('[data-action="compile-check"]')
                 .addEventListener('click', () => this._runCompileCheck());
             this.mountEl.querySelector('[data-action="new-project"]')
                 .addEventListener('click', () => BoudicaCode.NewProjectDialog.open());
+            this.saveBtn.addEventListener('click', () => this.saveCurrentFile());
+            this._updateSaveButton();
+        }
+
+        /**
+         * Ctrl/Cmd+S was previously the ONLY way to save — no visible
+         * button, so saving was undiscoverable unless you already knew the
+         * shortcut. Reflects dirty state too, so there's a visible cue
+         * that a file even has unsaved changes beyond the small tab dot.
+         */
+        _updateSaveButton() {
+            if (!this.saveBtn) return;
+            const path = AppState.getCurrentFilePath();
+            const dirty = path ? AppState.isDirty(path) : false;
+            this.saveBtn.disabled = !path;
+            this.saveBtn.classList.toggle('is-dirty', dirty);
+            this.saveBtn.innerHTML = dirty ? '&#128190; Save*' : '&#128190; Save';
         }
 
         _createEditor() {
@@ -234,6 +255,13 @@
                 closeBtn.title = 'Close';
                 closeBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
+                    // Used to close (and discard) unsaved changes with zero
+                    // warning — same class of bug as setProjectRoot() used
+                    // to have (see state.js). Confirm first, same pattern
+                    // as fileTree.js's own delete confirmation.
+                    if (AppState.isDirty(path) && !global.confirm(`"${basename(path)}" has unsaved changes. Close without saving?`)) {
+                        return;
+                    }
                     AppState.closeFile(path);
                 });
                 tab.appendChild(closeBtn);
@@ -244,6 +272,8 @@
                 });
                 this.tabsEl.appendChild(tab);
             }
+
+            this._updateSaveButton();
         }
 
         /** Shows either the Monaco mount or the rendered Home content, matching the active tab. */
@@ -300,20 +330,39 @@
         }
 
         async _onFileOpenRequested(event) {
-            const { path } = event.detail;
+            const { path, line } = event.detail;
 
             // Already open — just switch to its tab, no need to re-fetch.
             if (AppState.getOpenFilePaths().includes(path)) {
                 AppState.setActiveTab(path);
+                this._revealLine(line);
                 return;
             }
 
             try {
                 const content = await this.davClient.readFile(path);
                 AppState.setCurrentFile(path, content); // emits FILE_OPENED + TAB_ACTIVATED
+                this._revealLine(line);
             } catch (err) {
                 bus.emit(EVENTS.ERROR, { message: `Could not open ${path}`, error: err });
             }
+        }
+
+        /**
+         * Jumps the cursor/viewport to a specific line — used when a file
+         * is opened from a "Find in files" search result (fileTree.js).
+         * By the time this runs, AppState.setActiveTab()/setCurrentFile()
+         * above have already synchronously dispatched FILE_OPENED/
+         * TAB_ACTIVATED, which this same class handles synchronously too
+         * (_onFileOpened/_onTabActivated -> _syncVisibleContent ->
+         * editor.setModel()) — so the right model is already active here.
+         * No-op if no line was given, or Monaco hasn't finished loading.
+         */
+        _revealLine(line) {
+            if (!line || !this.editor) return;
+            this.editor.revealLineInCenter(line);
+            this.editor.setPosition({ lineNumber: line, column: 1 });
+            this.editor.focus();
         }
 
         _onFileOpened(event) {
@@ -359,6 +408,27 @@
                 model.setValue(content);
             }
             AppState.setFileContentFromDisk(path, content);
+        }
+
+        /**
+         * A file (or a folder containing open files) was renamed on disk
+         * — see fileTree.js's "Rename" context-menu item and
+         * AppState.renameOpenFile()'s docblock. The Monaco model itself
+         * doesn't need to change (same content, same undo stack), only
+         * the key it's stored under in this.models, so re-keying it here
+         * is enough to keep tabs/saves pointed at the right path.
+         */
+        _onFileRenamed(event) {
+            const { renames } = event.detail;
+            for (const [from, to] of renames) {
+                const model = this.models.get(from);
+                if (model) {
+                    this.models.delete(from);
+                    this.models.set(to, model);
+                }
+            }
+            this._renderTabs();
+            this._syncVisibleContent();
         }
 
         /** Public entry point used by fileTree.js / chatPanel.js — kept for backward compatibility. */

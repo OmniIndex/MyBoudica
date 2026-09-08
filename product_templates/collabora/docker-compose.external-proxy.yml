@@ -1,0 +1,49 @@
+##
+## Override for a box with its own pre-existing host-level reverse proxy
+## (e.g. ts-1-boudica's Apache, already fronting boudi.ca/
+## boudica.myboudica.com) instead of this stack's own bundled `nginx`
+## service - see docker-compose.yml's nginx service comment and
+## project-myboudica-integration-plan-20260905's Phase 1.
+##
+## setup.sh applies this automatically (writes `COMPOSE_FILE=docker-
+## compose.yml:docker-compose.external-proxy.yml` into .env) when the
+## installer is told this box already has its own reverse proxy - not
+## meant to be passed manually with -f in the normal case.
+##
+services:
+  # Nextcloud calls back out to https://talk.<domain> and
+  # https://whiteboard.<domain> from INSIDE this container for two known
+  # cases: Talk admin's "High-performance backend" connectivity check, and
+  # richdocuments' wopi_url/discovery re-validation touching the main
+  # domain (already same-container, no extra_hosts needed there, listed
+  # here only for the two subdomains that route to sibling containers).
+  #
+  # In the bundled-nginx deployment this resolves via a Docker network
+  # alias on the nginx service itself (see docker-compose.yml's nginx
+  # networks.default.aliases) - there is no nginx container here to alias
+  # to. Instead, resolve straight to the host's own gateway IP as seen from
+  # inside this container ("host-gateway", a literal keyword Docker
+  # resolves to the bridge gateway address - Docker Engine 20.10+) - the
+  # host's own reverse proxy listens on 0.0.0.0:443 there, and picks the
+  # right vhost via the TLS SNI name the container's HTTPS client sends
+  # regardless of which IP it actually dialed.
+  #
+  # Deliberately NOT relying on public DNS + hairpin NAT instead (i.e. just
+  # letting the container resolve talk.<domain> via the internet like a
+  # real browser would) - many cloud VPCs don't support a host reaching its
+  # own public IP from behind its own NAT, and this works identically
+  # whether or not that's the case, and even before the new DNS records
+  # from Phase 2 exist at all.
+  nextcloud:
+    extra_hosts:
+      - "talk.${BOUDICA_DOMAIN}:host-gateway"
+      - "whiteboard.${BOUDICA_DOMAIN}:host-gateway"
+
+  # nextcloud-cron runs the same occ commands (talk:signaling:add,
+  # richdocuments:activate-config, the DigestPollJob's own Talk-API calls)
+  # via its cron.php loop - needs the identical resolution, not just the
+  # main nextcloud container.
+  nextcloud-cron:
+    extra_hosts:
+      - "talk.${BOUDICA_DOMAIN}:host-gateway"
+      - "whiteboard.${BOUDICA_DOMAIN}:host-gateway"

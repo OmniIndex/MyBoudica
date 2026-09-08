@@ -11,9 +11,29 @@ general: {
 nat: {
 	nat_1_1_mapping = true
 	public_ip = ["__PUBLIC_IP__"]
-	stun_server = "__TURN_HOST__"
+	# stun_server/turn_server are Janus's OWN server-side connection to
+	# eturnal (its startup self-test, and its own TURN relay allocation
+	# when needed) - NOT what's advertised to real browser clients for ICE
+	# candidates (that's public_ip/nat_1_1_mapping above, plus Nextcloud
+	# Talk's own separate `occ talk:stun:add`/`talk:turn:add` registration,
+	# both of which correctly stay on the real public IP). Deliberately
+	# `host.docker.internal` (Janus's own compose service entry has an
+	# `extra_hosts: host.docker.internal:host-gateway` for exactly this),
+	# NOT __PUBLIC_IP__ - eturnal runs `network_mode: host`, and on a box
+	# where the public IP is NAT'd by the cloud provider rather than bound
+	# to a real local interface (confirmed on ts-1-boudica: only a private
+	# 192.168.x.x address exists on the host's actual NIC), a container
+	# connecting to its own host's public IP is a classic hairpin-NAT
+	# failure - confirmed live 2026-09-06, Janus's own startup STUN test
+	# got zero response and crash-looped even with the relevant firewall
+	# ports opened, because the packets never actually reached the host at
+	# all. `host.docker.internal` reaches the same eturnal listener (bound
+	# 0.0.0.0, so every host interface including the bridge gateway) without
+	# ever leaving the host - works regardless of whether a box's public IP
+	# happens to be locally-bound or NAT'd.
+	stun_server = "host.docker.internal"
 	stun_port = 3478
-	turn_server = "__TURN_HOST__"
+	turn_server = "host.docker.internal"
 	turn_port = 3478
 	turn_type = "udp"
 	turn_user = "janus"

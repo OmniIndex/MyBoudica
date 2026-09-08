@@ -26,38 +26,27 @@ class SAMLAuthenticator {
      */
     async init() {
         try {
-            // Check if user has existing valid session
-            const existingSession = this.checkExistingSession();
-            
-            if (existingSession) {
-                // Restore session from localStorage.
-                // Re-verify provision status on every page load so that admin
-                // suspension takes effect even for users with a cached session.
-                this.authenticated = true;
-                this.user = existingSession.user;
-                this.sessionToken = existingSession.token;
-                this.accessToken = existingSession.token;
-
-                // Only call provision_check when the stored token is still valid
-                // (not expired). If it's expired, refreshAccessToken() will run
-                // immediately and will call provision_check with the fresh token.
-                const tokenStillValid = existingSession.expiresAt &&
-                    new Date(existingSession.expiresAt) > new Date();
-                if (tokenStillValid) {
-                    const stillAllowed = await this._checkProvisioned(
-                        this.accessToken, false /* failOnNetworkError */);
-                    if (!stillAllowed) return; // error/logout already handled
-                }
-
-                //this.startSessionMonitoring();
-                
-                // Trigger success callback
-                if (this.onSuccess) {
-                    this.onSuccess(this.user);
-                }
-            } else {
-                //await this.initiateAuthentication();
-            }
+            // checkExistingSession() is async and does ALL the real work
+            // itself as side effects (sets this.authenticated/accessToken/
+            // user and calls this.onSuccess() internally) - it always
+            // returns null, by design, so there's nothing useful to branch
+            // on from its return value. A prior version of this method
+            // called it without awaiting and then tried to read .user/
+            // .token off the returned value, which - missing the await -
+            // was always a pending Promise object (always truthy, with no
+            // .token/.user properties of its own) - meaning this.accessToken
+            // got silently overwritten to `undefined` on every single call,
+            // regardless of what checkExistingSession() had just correctly
+            // set moments earlier. Invisible until now because nothing
+            // previously depended on this.accessToken actually being
+            // populated; chat-api.js's _authHeaders() now does, and every
+            // endpoint that relies solely on it (not the redundant direct-
+            // localStorage read some older CGI calls also do) was failing
+            // authentication as a result - confirmed live via a real 403
+            // on /shared_chats and /messages, and confirmed fixed by
+            // reproducing the exact same request manually with a real
+            // Authorization header.
+            await this.checkExistingSession();
         } catch (error) {
             console.error('Authentication initialization failed:', error);
             this.handleAuthError(error);
@@ -69,100 +58,65 @@ class SAMLAuthenticator {
      */
     async checkExistingSession() {
         try {
-            const sessionData = localStorage.getItem('boudica_session');
-            if (sessionData) {
-                const session = JSON.parse(sessionData);
-                // Check to see if we have an API key
-                if ( session.token && session.email) {
-                    console.log('Found existing session for user:', session.user.email || session.token);
-                    const sessionData = {
-                        token: session.token,
-                        refreshToken: session.refreshToken || session.token,
-                        user: { email: session.email }
-                    };
-                    localStorage.setItem('boudica_session', JSON.stringify(sessionData));                    
-                    this.authenticated = true;
-                    this.accessToken = session.token;
-                    this.sessionToken = session.token;
-                    this.user = { email: session.uid || session.email };
-                    this.refreshToken = session.token;
-                    this.email = session.email;
-                    this.onSuccess && this.onSuccess(this.user);
-                } else {
-                    console.warn('[SAMLAuth] Existing session is missing token or user info, clearing it');
-                    await this.signup();
-                    const sessionData = localStorage.getItem('boudica_session');
-                    if (sessionData) {
-                        const session = JSON.parse(sessionData);
-                        if ( session.token && session.email) {
-                            console.log('Found existing session for user:', session.email || session.token);
-                            const sessionData = {
-                                token: session.token,
-                                refreshToken: session.refreshToken || session.token,
-                                user: { email: session.email }
-                            };
-                            localStorage.setItem('boudica_session', JSON.stringify(sessionData));
-                            this.accessToken = session.token;
-                            this.sessionToken = session.token;
-                            this.user = { email: session.uid || session.email };
-                            this.refreshToken = session.token;
-                            this.email = session.email;
-                            this.authenticated = true;
-                            this.onSuccess && this.onSuccess(this.user);
-                        }
-                    } else {
-                        console.warn('[SAMLAuth] No session data found after signup attempt');
-                        this.authenticated = false;
-                    }
-                }
-            } else {
+            let sessionData = localStorage.getItem('boudica_session');
+            if (!sessionData) {
                 await this.signup();
-                const sessionData = localStorage.getItem('boudica_session');
-                if (sessionData) {
-                    const session = JSON.parse(sessionData);
-                    if ( session.token && session.email) {
-                        console.log('Found existing session for user:', session.email || session.token);
-                        const sessionData = {
-                            token: session.token,
-                            refreshToken: session.refreshToken || session.token,
-                            user: { email: session.email }
-                        };
-                        localStorage.setItem('boudica_session', JSON.stringify(sessionData));
-                        this.authenticated = true;
-                        this.accessToken = session.token;
-                        this.sessionToken = session.token;
-                        this.user = { email: session.uid || session.email };
-                        this.refreshToken = session.token;
-                        this.email = session.email;
-                        this.onSuccess && this.onSuccess(this.user);
-                    }
-                } else {
-                    await this.signup();
-                    const sessionData = localStorage.getItem('boudica_session');
-                    if (sessionData) {
-                        const session = JSON.parse(sessionData);
-                        if ( session.token && session.email) {
-                            console.log('Found existing session for user:', session.email || session.token);
-                            const sessionData = {
-                                token: session.token,
-                                refreshToken: session.refreshToken || session.token,
-                                user: { email: session.email }
-                            };
-                            localStorage.setItem('boudica_session', JSON.stringify(sessionData));
-                            this.authenticated = true;
-                            this.accessToken = session.token;
-                            this.sessionToken = session.token;
-                            this.user = { email: session.uid || session.email };
-                            this.refreshToken = session.token;
-                            this.email = session.email;                    
-                            this.onSuccess && this.onSuccess(this.user);
-                        }
-                    } else {
-                        console.warn('[SAMLAuth] No session data found after signup attempt');
-                        this.authenticated = false;
-                    }
-                }         
+                sessionData = localStorage.getItem('boudica_session');
             }
+            if (!sessionData) {
+                console.warn('[SAMLAuth] No session data found after signup attempt');
+                this.authenticated = false;
+                return null;
+            }
+
+            let session = JSON.parse(sessionData);
+            // Accepts either the raw PHP pre-seed shape ({token, email}) or
+            // this method's own normalized output ({token, user:{email}}) -
+            // every successful run below overwrites localStorage with the
+            // latter, so the *next* page load must recognize its own prior
+            // output too, not just the shape it was originally written
+            // against. Missing this (fixed 2026-09-05) meant a session
+            // authenticated correctly exactly once, then silently stopped
+            // working on every subsequent page load: token/refreshToken
+            // stayed in storage (looked present), but the flat session.email
+            // check failed against the now-nested user.email, so
+            // this.accessToken never got set and every /chat request went
+            // out with an empty api_key, rejected by the backend as
+            // "Unauthorized - valid username, API key, or session token
+            // required".
+            let email = session.email || (session.user && session.user.email) || '';
+
+            if (!session.token || !email) {
+                console.warn('[SAMLAuth] Existing session is missing token or user info, clearing it');
+                await this.signup();
+                sessionData = localStorage.getItem('boudica_session');
+                if (!sessionData) {
+                    console.warn('[SAMLAuth] No session data found after signup attempt');
+                    this.authenticated = false;
+                    return null;
+                }
+                session = JSON.parse(sessionData);
+                email = session.email || (session.user && session.user.email) || '';
+                if (!session.token || !email) {
+                    this.authenticated = false;
+                    return null;
+                }
+            }
+
+            console.log('Found existing session for user:', email);
+            const normalized = {
+                token: session.token,
+                refreshToken: session.refreshToken || session.token,
+                user: { email }
+            };
+            localStorage.setItem('boudica_session', JSON.stringify(normalized));
+            this.authenticated = true;
+            this.accessToken = session.token;
+            this.sessionToken = session.token;
+            this.user = { email };
+            this.refreshToken = normalized.refreshToken;
+            this.email = email;
+            this.onSuccess && this.onSuccess(this.user);
         } catch (error) {
             console.error('Error checking existing session:', error);
             localStorage.removeItem('boudica_session');
@@ -191,118 +145,43 @@ class SAMLAuthenticator {
         return this.sessionToken;
     }
 
- async signup() {
-            const currentUser = OC.getCurrentUser();
-            if (!currentUser) {
-                console.log('[Boudica AutoSignup] Not authenticated - skipping');
-                return;
-            }
-            console.log('[Boudica AutoSignup] User authenticated:', currentUser.displayName);
-            //OK do we have a key or not?
-            const sessionData = localStorage.getItem('boudica_session');
-            const session = JSON.parse(sessionData || '{}');
-            const apiKey = session.token || '';
-            if ( apiKey) {
-                console.log('[Boudica AutoSignup] API key already exists - skipping signup');
-                return;
-            }
-            console.log('[Boudica AutoSignup] No API key found - attempting signup');
-           // (async () => {
-                await this.performBoudicalAutosignup(currentUser).then(result => {
-                    if (result.success) {
-                        console.log('[Boudica AutoSignup] Signup successful, storing API key');
-                        // Store the API key in localStorage
-                        const newSession = {
-                            token: result.apiKey,
-                            email: result.email,
-                            message: result.message,
-                            rateLimits: result.rateLimits
-                        };
-                        localStorage.setItem('boudica_session', JSON.stringify(newSession));
-                    } else {
-                        console.error('[Boudica AutoSignup] Signup failed:', result.error);
-                    }
-                }).catch(err => {
-                    console.error('[Boudica AutoSignup] Error during signup:', err);
-                });
-            //})();
-
-}//end signup
-
-  /**
-     * Call Boudica API signup endpoint
+    /**
+     * Fallback only. The real credential now reaches localStorage via
+     * templates/index.php's own pre-seed <script> (PageController::index()
+     * passes this user's boudicaai/boudica_api_key IConfig value, minted at
+     * Keycloak login time by KeycloakProvisioningService::ensureApiKey()) -
+     * the same proven pattern already used by boudicaagent/boudicacode/
+     * boudicadashboard's own PageController+template. That pre-seed prints
+     * before this script loads, so checkExistingSession() normally finds a
+     * valid session already in place and never calls this method at all.
+     *
+     * This used to instead POST directly to the public
+     * https://boudi.ca/api/boudica/beta/signup SaaS endpoint and store
+     * WHATEVER key that returned - a different server/database than this
+     * deployment's own local /api/boudica, so the key it stored was never
+     * valid here. That produced the exact "signup succeeded, then every
+     * chat request fails with Invalid API key" symptom, since the local
+     * CGI's api_keys table never had a row for that key. There is
+     * deliberately no replacement network call here - a user with no
+     * provisioned key yet (e.g. hasn't completed "Sign in with Boudica")
+     * just has no session until they do, same as the sibling apps.
      */
-        async performBoudicalAutosignup(ncUser) {
-            // Boudica API endpoint for beta signup
-    const BOUDICA_API_URL = 'https://boudi.ca/api/boudica/beta/signup';
-        try {
-            // Prepare signup payload with Nextcloud user data
-            const signupData = {
-                name: ncUser.displayName || ncUser.uid,
-                email: ncUser.uid,
-                organization: ncUser.uid  // Nextcloud username as org
-                // use_case and description are optional - API will use defaults
-            };
-
-            console.log('[Boudica AutoSignup] Calling Boudica API signup with user:', signupData.name);
-
-            // POST to Boudica API endpoint
-            const response = await fetch(BOUDICA_API_URL, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(signupData),
-                credentials: 'omit'  // Don't send Nextcloud cookies to Boudica
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({}));
-                const errorMsg = errorData.error || `HTTP ${response.status}`;
-
-                // Handle specific errors
-                if (response.status === 409) {
-                    console.log('[Boudica AutoSignup] Email already registered:', signupData.email);
-                    return {
-                        success: false,
-                        error: 'Email already has an API key',
-                        code: 'EMAIL_EXISTS'
-                    };
-                }
-
-                console.error('[Boudica AutoSignup] Signup failed:', errorMsg);
-                return {
-                    success: false,
-                    error: errorMsg
-                };
-            }
-
-            const data = await response.json();
-            if (data.success && data.api_key) {
-                console.log('[Boudica AutoSignup] API key generated successfully');
-                return {
-                    success: true,
-                    apiKey: data.api_key,
-                    email: signupData.email,
-                    message: data.message,
-                    rateLimits: data.rate_limits
-                };
-            } else {
-                console.error('[Boudica AutoSignup] Unexpected response:', data);
-                return {
-                    success: false,
-                    error: 'Unexpected server response'
-                };
-            }
-        } catch (error) {
-            console.error('[Boudica AutoSignup] Network error:', error);
-            return {
-                success: false,
-                error: 'Network error: ' + error.message
-            };
+    async signup() {
+        const currentUser = OC.getCurrentUser();
+        if (!currentUser) {
+            console.log('[Boudica AutoSignup] Not authenticated - skipping');
+            return;
         }
-    }
 
+        const sessionData = localStorage.getItem('boudica_session');
+        const session = JSON.parse(sessionData || '{}');
+        if (session.token) {
+            console.log('[Boudica AutoSignup] API key already exists - skipping signup');
+            return;
+        }
+
+        console.warn('[Boudica AutoSignup] No provisioned API key on file yet for this user');
+    }//end signup
 
 }
 

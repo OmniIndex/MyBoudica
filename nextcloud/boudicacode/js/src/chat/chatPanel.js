@@ -17,7 +17,7 @@
     'use strict';
 
     const BoudicaCode = global.BoudicaCode || (global.BoudicaCode = {});
-    const { bus, EVENTS, AppState, BoudicaApi, PromptBuilder, ProjectScaffolder } = BoudicaCode;
+    const { bus, EVENTS, AppState, BoudicaApi, PromptBuilder, ProjectScaffolder, DiffUtil } = BoudicaCode;
 
     const EXTENSION_TO_STACK = {
         cpp: 'cpp', cc: 'cpp', cxx: 'cpp', h: 'cpp', hpp: 'cpp',
@@ -56,6 +56,16 @@
     // Ported from parse_create_request()'s heuristic filepath matcher.
     const FILEPATH_RE = /(?:src\/|\.?\/?[\w-]+\/)*[\w-]+\.\w+/;
 
+    // buildEditPrompt() (promptBuilder.js) inlines the ENTIRE current file
+    // (with line numbers) into the prompt and asks for the entire updated
+    // file back — no tokenizer here to estimate an exact budget, but "the
+    // whole file round-trips through one prompt+response" stops being
+    // sensible well before any hard token limit for a file this size
+    // anyway. Sized for what this app targets (small scripts), not big
+    // generated files — see _runEdit()'s guard.
+    const MAX_EDIT_LINES = 800;
+    const MAX_EDIT_CHARS = 40000;
+
     function extractFilePath(text) {
         const match = text.match(FILEPATH_RE);
         return match ? match[0] : null;
@@ -74,6 +84,12 @@
         constructor(mountEl, davClient) {
             this.mountEl = mountEl;
             this.davClient = davClient; // rooted at the CURRENT project (kept in sync by main.js)
+            // Set for the duration of one _handleSubmit() call so a Boudica
+            // request (chat/create/edit) can be cancelled mid-flight — see
+            // _setBusy()/the Stop button in _renderShell(). A submit may
+            // make more than one sequential BoudicaApi.send() call (e.g.
+            // clarify -> edit); one controller per submit covers all of them.
+            this._activeController = null;
             this._onCompileResult = this._onCompileResult.bind(this);
             bus.on(EVENTS.COMPILE_RESULT, this._onCompileResult);
 
@@ -124,16 +140,22 @@
                         <textarea data-role="input" rows="4"
                                placeholder="/new my-app cpp, /create src/util.py a csv parser, or just ask&#10;(Enter to send, Shift+Enter for a new line)"></textarea>
                         <div class="bc-chat__form-actions">
-                            <button type="submit">Send</button>
+                            <button type="button" data-role="stop" class="bc-chat__stop-btn" hidden>Stop</button>
+                            <button type="submit" data-role="send">Send</button>
                         </div>
                     </form>
                 </div>
             `;
             this.logEl = this.mountEl.querySelector('[data-role="log"]');
             this.inputEl = this.mountEl.querySelector('[data-role="input"]');
+            this.sendBtn = this.mountEl.querySelector('[data-role="send"]');
+            this.stopBtn = this.mountEl.querySelector('[data-role="stop"]');
+
+            this.stopBtn.addEventListener('click', () => this._activeController?.abort());
 
             this.mountEl.querySelector('[data-role="form"]').addEventListener('submit', (e) => {
                 e.preventDefault();
+                if (this._activeController) return; // a request is already in flight — use Stop, not another Send
                 const text = this.inputEl.value.trim();
                 if (!text) return;
                 this.inputEl.value = '';
@@ -145,12 +167,34 @@
             this.inputEl.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
+                    if (this._activeController) return;
                     const text = this.inputEl.value.trim();
                     if (!text) return;
                     this.inputEl.value = '';
                     this._handleSubmit(text);
                 }
             });
+        }
+
+        /** Toggles the Send/Stop pair and disables input for the duration of one in-flight request. */
+        _setBusy(busy) {
+            if (this.sendBtn) this.sendBtn.disabled = busy;
+            if (this.inputEl) this.inputEl.disabled = busy;
+            if (this.stopBtn) this.stopBtn.hidden = !busy;
+        }
+
+        /**
+         * Shared by every catch block downstream of a BoudicaApi.send()
+         * call — distinguishes "the person hit Stop" (AbortError, expected,
+         * not a failure) from a genuine error, so cancelling a request
+         * doesn't read as though something broke.
+         * @returns {{text: string, tone: 'warning'|'error'}}
+         */
+        _describeError(err, context) {
+            if (err && err.name === 'AbortError') {
+                return { text: 'Cancelled.', tone: 'warning' };
+            }
+            return { text: `${context}: ${err.message}`, tone: 'error' };
         }
 
         /**
@@ -181,10 +225,59 @@
             this.logEl.scrollTop = this.logEl.scrollHeight;
         }
 
+        /**
+         * Like _setMessage, but for a genuine failure — appends an inline
+         * Retry action to the SAME bubble rather than requiring the person
+         * to retype the whole request. `retryFn` is expected to be
+         * `() => this._runWithLifecycle(() => <the original call again>)`
+         * — re-running just the failed action, not the whole submit (which
+         * would re-append a new "user said X" bubble above it).
+         */
+        _setMessageWithRetry(bubble, text, tone, retryFn) {
+            bubble.textContent = '';
+            bubble.classList.remove('bc-chat__message--pending', 'bc-chat__message--success', 'bc-chat__message--error', 'bc-chat__message--warning');
+            if (tone !== 'neutral') {
+                bubble.classList.add(`bc-chat__message--${tone}`);
+            }
+            bubble.appendChild(document.createTextNode(text));
+
+            const retryBtn = document.createElement('button');
+            retryBtn.type = 'button';
+            retryBtn.className = 'bc-chat__retry-btn';
+            retryBtn.textContent = 'Retry';
+            retryBtn.addEventListener('click', () => {
+                retryBtn.remove();
+                this._setMessage(bubble, 'Retrying…', true);
+                retryFn();
+            });
+            bubble.appendChild(retryBtn);
+
+            this.logEl.scrollTop = this.logEl.scrollHeight;
+        }
+
         _onCompileResult(event) {
             const { path, success, output } = event.detail;
             const icon = success ? '✅' : '❌';
             this._appendMessage('bot', `${icon} Compile check — ${path}\n${output}`, false, success ? 'success' : 'error');
+        }
+
+        /**
+         * Wraps one async action with the busy/cancel lifecycle (a fresh
+         * AbortController, Send/Stop toggled for the duration) that used
+         * to live directly in _handleSubmit(). Pulled out so a Retry
+         * button (see _setMessageWithRetry) can re-run just the ONE failed
+         * action through the same lifecycle, without going through
+         * _handleSubmit() itself and re-appending a new user-message bubble.
+         */
+        async _runWithLifecycle(taskFn) {
+            this._activeController = new AbortController();
+            this._setBusy(true);
+            try {
+                await taskFn();
+            } finally {
+                this._activeController = null;
+                this._setBusy(false);
+            }
         }
 
         async _handleSubmit(text) {
@@ -192,14 +285,15 @@
             bus.emit(EVENTS.CHAT_MESSAGE_SENT, { text });
 
             try {
-                if (text.startsWith('/')) {
-                    await this._handleCommand(text);
-                } else {
-                    await this._handleFreeText(text);
-                }
+                await this._runWithLifecycle(() =>
+                    text.startsWith('/') ? this._handleCommand(text) : this._handleFreeText(text)
+                );
             } catch (err) {
-                this._appendMessage('bot', `Error: ${err.message}`, false, 'error');
-                bus.emit(EVENTS.ERROR, { message: 'Chat/command failed', error: err, silent: true });
+                const { text: msg, tone } = this._describeError(err, 'Error');
+                this._appendMessage('bot', msg, false, tone);
+                if (tone !== 'warning') {
+                    bus.emit(EVENTS.ERROR, { message: 'Chat/command failed', error: err, silent: true });
+                }
             }
         }
 
@@ -272,20 +366,32 @@
             const { stack: detectedStack } = await this._detectStack(null);
             const stack = detectedStack || 'general'; // planning chat's own fallback — no file will be written, so no need to flag a guess here
             const status = await this._quickStatus();
-            const prompt = PromptBuilder.buildPlanningPrompt(stack, status, text);
-
             const bubble = this._appendMessage('bot', '…', true);
+            return this._sendPlanningChat(text, stack, status, bubble);
+        }
+
+        /** Split out of _handleFreeText so a failed request's Retry button can re-run just this call — see _setMessageWithRetry. */
+        async _sendPlanningChat(text, stack, status, bubble) {
+            const prompt = PromptBuilder.buildPlanningPrompt(stack, status, text);
             try {
                 const reply = await BoudicaApi.send(this._sessionKey(), prompt, {
                     temperature: 0.7,
                     maxTokens: 2048,
                     onToken: (partial) => this._setMessage(bubble, partial, true), // still pulsing — more tokens may still arrive
+                    signal: this._activeController?.signal,
                 });
                 this._setMessage(bubble, reply || '(no response)', false);
                 bus.emit(EVENTS.CHAT_MESSAGE_RECEIVED, { reply });
             } catch (err) {
-                this._setMessage(bubble, `Couldn't reach Boudica: ${err.message}`, false, 'error');
-                bus.emit(EVENTS.ERROR, { message: 'Chat request failed', error: err, silent: true });
+                const { text: msg, tone } = this._describeError(err, "Couldn't reach Boudica");
+                if (tone === 'error') {
+                    this._setMessageWithRetry(bubble, msg, tone, () => this._runWithLifecycle(() => this._sendPlanningChat(text, stack, status, bubble)));
+                } else {
+                    this._setMessage(bubble, msg, false, tone);
+                }
+                if (tone !== 'warning') {
+                    bus.emit(EVENTS.ERROR, { message: 'Chat request failed', error: err, silent: true });
+                }
             }
         }
 
@@ -344,9 +450,23 @@
                 // use the "+ New Project" button (editor toolbar) for a
                 // folder picker if you want it somewhere else.
                 const { projectRoot, fileCount } = await BoudicaCode.ProjectCreator.createProject('', name, stack);
-                this._appendMessage('bot', `Created new ${stack} project "${projectRoot}" (${fileCount} files) and switched to it.`, false, 'success');
+                // Emitted before the switch attempt (not after) so the
+                // project bar/file tree refresh their listings either way —
+                // the project now exists on disk regardless of whether the
+                // workspace actually switches into it below.
                 bus.emit(EVENTS.CHAT_COMMAND_EXECUTED, { command: 'new', result: { projectRoot } });
-                AppState.setProjectRoot(projectRoot); // triggers main.js's listener -> this.davClient.setProjectRoot + fileTree reload
+                // setProjectRoot() confirms first if unsaved changes are
+                // open elsewhere and returns false if the person declines —
+                // the project is still created either way, just not entered.
+                const switched = AppState.setProjectRoot(projectRoot); // triggers main.js's listener -> this.davClient.setProjectRoot + fileTree reload
+                this._appendMessage(
+                    'bot',
+                    switched
+                        ? `Created new ${stack} project "${projectRoot}" (${fileCount} files) and switched to it.`
+                        : `Created new ${stack} project "${projectRoot}" (${fileCount} files). Save your current work, then switch to it from the project bar.`,
+                    false,
+                    'success'
+                );
             } catch (err) {
                 this._appendMessage('bot', err.message, false, 'error');
             }
@@ -388,7 +508,11 @@
             bubble = bubble || this._appendMessage('bot', '', true);
             this._setMessage(bubble, `Asking Boudica to write ${path}…`, true);
             try {
-                const raw = await BoudicaApi.send(this._sessionKey(), prompt, { temperature: 0.7, maxTokens: 8192 });
+                const raw = await BoudicaApi.send(this._sessionKey(), prompt, {
+                    temperature: 0.7,
+                    maxTokens: 8192,
+                    signal: this._activeController?.signal,
+                });
                 const code = PromptBuilder.cleanCodeResponse(raw);
                 if (!code.trim()) {
                     this._setMessage(bubble, 'Boudica returned an empty response — try rephrasing the description.', false, 'error');
@@ -401,7 +525,13 @@
                 bus.emit(EVENTS.CHAT_COMMAND_EXECUTED, { command: 'create', result: { path } });
                 bus.emit(EVENTS.FILE_OPEN_REQUESTED, { path });
             } catch (err) {
-                this._setMessage(bubble, `Couldn't create ${path}: ${err.message}`, false, 'error');
+                const { text: msg, tone } = this._describeError(err, `Couldn't create ${path}`);
+                if (tone === 'error') {
+                    // Retry with the already-resolved `stack`, not the original (possibly undefined) knownStack — avoids re-resolving it on every retry.
+                    this._setMessageWithRetry(bubble, msg, tone, () => this._runWithLifecycle(() => this._createNewFile(path, description, stack, bubble)));
+                    return;
+                }
+                this._setMessage(bubble, msg, false, tone);
             }
         }
 
@@ -442,7 +572,7 @@
                 const headerRaw = await BoudicaApi.send(
                     this._sessionKey(),
                     PromptBuilder.buildHeaderPrompt('cpp', description),
-                    { temperature: 0.5, maxTokens: 2048 }
+                    { temperature: 0.5, maxTokens: 2048, signal: this._activeController?.signal }
                 );
                 const headerCode = PromptBuilder.cleanCodeResponse(headerRaw);
                 if (!headerCode.trim()) {
@@ -456,7 +586,7 @@
                 const cppRaw = await BoudicaApi.send(
                     this._sessionKey(),
                     PromptBuilder.buildCreatePrompt('cpp', description, headerCode),
-                    { temperature: 0.5, maxTokens: 8192 }
+                    { temperature: 0.5, maxTokens: 8192, signal: this._activeController?.signal }
                 );
                 const cppCode = PromptBuilder.cleanCodeResponse(cppRaw);
                 if (!cppCode.trim()) {
@@ -471,7 +601,17 @@
                 bus.emit(EVENTS.CHAT_COMMAND_EXECUTED, { command: 'create', result: { path: cppPath } });
                 bus.emit(EVENTS.FILE_OPEN_REQUESTED, { path: cppPath });
             } catch (err) {
-                this._setMessage(bubble, `Couldn't create ${headerPath}/${cppPath}: ${err.message}`, false, 'error');
+                const { text: msg, tone } = this._describeError(err, `Couldn't create ${headerPath}/${cppPath}`);
+                if (tone === 'error') {
+                    // Safe to retry the whole call as-is even if the header
+                    // already got written before the .cpp call failed — the
+                    // existence check near the top of this function falls
+                    // back to a single-file create for just the .cpp then,
+                    // rather than re-asking for (and re-writing) the header.
+                    this._setMessageWithRetry(bubble, msg, tone, () => this._runWithLifecycle(() => this._createCppPair(cppPath, description, bubble)));
+                    return;
+                }
+                this._setMessage(bubble, msg, false, tone);
             }
         }
 
@@ -616,6 +756,18 @@
                     return;
                 }
             }
+
+            const lineCount = currentContent.split('\n').length;
+            if (lineCount > MAX_EDIT_LINES || currentContent.length > MAX_EDIT_CHARS) {
+                this._setMessage(
+                    bubble || this._appendMessage('bot', '', true),
+                    `${targetFile} is ${lineCount.toLocaleString()} lines / ${currentContent.length.toLocaleString()} characters — too large to safely inline into a full-file edit prompt (this app targets small scripts, not big files). Try editing a smaller section directly in Monaco, or splitting this file up.`,
+                    false,
+                    'warning'
+                );
+                return;
+            }
+
             const stack = knownStack || (await this._resolveStack(targetFile));
 
             bubble = bubble || this._appendMessage('bot', '', true);
@@ -624,7 +776,7 @@
                 const clarifiedRaw = await BoudicaApi.send(
                     this._sessionKey(),
                     PromptBuilder.buildClarifyPrompt(changeDescription, stack),
-                    { temperature: 0.3, maxTokens: 256 }
+                    { temperature: 0.3, maxTokens: 256, signal: this._activeController?.signal }
                 );
                 const clarified = PromptBuilder.cleanClarifiedResponse(clarifiedRaw, changeDescription);
 
@@ -632,7 +784,7 @@
                 const editedRaw = await BoudicaApi.send(
                     this._sessionKey(),
                     PromptBuilder.buildEditPrompt(targetFile, currentContent, clarified, stack),
-                    { temperature: 0.2, maxTokens: 8192 }
+                    { temperature: 0.2, maxTokens: 8192, signal: this._activeController?.signal }
                 );
                 const updatedCode = PromptBuilder.cleanCodeResponse(editedRaw);
                 if (!updatedCode.trim()) {
@@ -641,10 +793,16 @@
                 }
 
                 const finalCode = ensureTrailingNewline(updatedCode);
+                // Previously the only way to see what an edit actually did
+                // was to pull up the .boudica_backups/ copy _backupFile()
+                // writes below and diff it by hand after the fact. Compute
+                // it up front instead so it can go straight in the success
+                // message — visible immediately, not just recoverable.
+                const diffSummary = DiffUtil.summarize(currentContent, finalCode);
                 await this._backupFile(targetFile); // safety net before the overwrite below — see _backupFile's docblock
                 await this.davClient.writeFile(targetFile, finalCode);
 
-                this._setMessage(bubble, `Updated ${targetFile}.`, false, 'success');
+                this._setMessage(bubble, `Updated ${targetFile}.\n\n${diffSummary}`, false, 'success');
                 bus.emit(EVENTS.CHAT_COMMAND_EXECUTED, { command: 'edit', result: { path: targetFile } });
                 if (alreadyOpen) {
                     // Push the new content straight into the live Monaco model.
@@ -654,7 +812,16 @@
                     bus.emit(EVENTS.FILE_OPEN_REQUESTED, { path: targetFile });
                 }
             } catch (err) {
-                this._setMessage(bubble, `Couldn't edit ${targetFile}: ${err.message}`, false, 'error');
+                const { text: msg, tone } = this._describeError(err, `Couldn't edit ${targetFile}`);
+                if (tone === 'error') {
+                    // Retry with the already-resolved `stack` and the
+                    // original (not clarified) changeDescription — the
+                    // clarify step re-runs fresh on retry too, which is
+                    // correct since it's cheap and non-destructive.
+                    this._setMessageWithRetry(bubble, msg, tone, () => this._runWithLifecycle(() => this._runEdit(targetFile, changeDescription, stack, bubble)));
+                    return;
+                }
+                this._setMessage(bubble, msg, false, tone);
             }
         }
 

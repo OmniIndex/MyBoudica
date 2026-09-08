@@ -145,6 +145,42 @@ html, body {
     color: var(--color-text-maxcontrast, #767676);
 }
 
+/* Rename/Delete — dimmed until hover/keyboard-focus so a normal
+   "pick a project" glance isn't cluttered with destructive-looking icons. */
+.bc-projectbar__item-actions {
+    display: flex;
+    flex-shrink: 0;
+    gap: 2px;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+}
+
+.bc-projectbar__item:hover .bc-projectbar__item-actions,
+.bc-projectbar__item:focus-within .bc-projectbar__item-actions {
+    opacity: 1;
+}
+
+.bc-projectbar__item-actions button {
+    font-size: 12px;
+    line-height: 1;
+    padding: 3px 5px;
+    border: none;
+    border-radius: 3px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+}
+
+.bc-projectbar__item-actions button:hover {
+    background: rgba(0, 0, 0, 0.15);
+}
+
+/* Same red family as .bc-statusbar--error / .bc-chat__stop-btn. */
+.bc-projectbar__item-actions [data-action="delete"]:hover {
+    background: #a83232;
+    color: #fff;
+}
+
 .bc-projectbar__empty {
     padding: 10px;
     font-size: 12px;
@@ -260,6 +296,7 @@ html, body {
 /* Collapsed: keep just the toolbar strip (with its expand toggle) visible; hide everything else. */
 .bc-file-tree--collapsed .bc-file-tree__breadcrumb,
 .bc-file-tree--collapsed .bc-file-tree__list,
+.bc-file-tree--collapsed .bc-file-tree__search-bar,
 .bc-file-tree--collapsed .bc-file-tree__toolbar button:not([data-action="collapse"]) {
     display: none;
 }
@@ -267,6 +304,40 @@ html, body {
 .bc-file-tree--collapsed .bc-file-tree__toolbar {
     flex-direction: column;
     justify-content: flex-start;
+}
+
+.bc-file-tree__search-bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--color-border, #444);
+}
+
+.bc-file-tree__search-bar input {
+    flex: 1;
+    min-width: 0;
+    font-size: 12px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--color-border, #444);
+    background: var(--color-main-background, #fff);
+    color: var(--color-main-text, #222);
+}
+
+.bc-file-tree__search-bar button {
+    font-size: 14px;
+    line-height: 1;
+    padding: 3px 8px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--color-main-text, #333);
+    cursor: pointer;
+}
+
+.bc-file-tree__search-bar button:hover {
+    background: rgba(0, 0, 0, 0.08);
 }
 
 .bc-file-tree__breadcrumb {
@@ -342,6 +413,31 @@ html, body {
 
 .bc-file-tree__item.is-active:hover {
     background: var(--color-primary-element-light, rgba(0, 130, 201, 0.26));
+}
+
+/* Find-in-files results — two lines (path:line, then a snippet), unlike
+   the single-line nowrap entries a normal directory listing shows. */
+.bc-file-tree__item--search-result {
+    white-space: normal;
+    padding: 5px 6px;
+    margin-bottom: 2px;
+}
+
+.bc-file-tree__result-location {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-primary-element, #0082c9);
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.bc-file-tree__result-snippet {
+    font-size: 12px;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    color: var(--color-text-maxcontrast, #767676);
+    white-space: pre;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .bc-file-tree__empty {
@@ -476,6 +572,26 @@ html, body {
 .bc-editor-toolbar [data-action="new-project"] {
     border-color: rgba(255, 255, 255, 0.2);
     font-weight: 600;
+}
+
+.bc-editor-toolbar button:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.bc-editor-toolbar button:disabled:hover {
+    background: transparent;
+    border-color: transparent;
+}
+
+/* Same amber as .bc-editor-tab__dirty-dot — one unsaved-changes color across the toolbar and tab strip. */
+.bc-editor-toolbar [data-action="save"].is-dirty {
+    color: #e8ab2e;
+    border-color: rgba(232, 171, 46, 0.4);
+}
+
+.bc-editor-toolbar [data-action="save"].is-dirty:hover {
+    background: rgba(232, 171, 46, 0.15);
 }
 
 .bc-editor-body {
@@ -666,6 +782,24 @@ html, body {
     color: #f8ecd2;
 }
 
+/* Inline retry on a failed AI request — see chatPanel.js's
+   _setMessageWithRetry(). Sits below the error text, in the same bubble. */
+.bc-chat__retry-btn {
+    display: block;
+    margin-top: 6px;
+    padding: 3px 10px;
+    font-size: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.08);
+    color: inherit;
+    cursor: pointer;
+}
+
+.bc-chat__retry-btn:hover {
+    background: rgba(255, 255, 255, 0.18);
+}
+
 /* An in-progress request ("On it…", "Asking Boudica to write…", etc.) —
    pulses so a slow response still visibly reads as "working", not stalled.
    Reduced-motion users get a plain static dim instead of the animation. */
@@ -709,6 +843,7 @@ html, body {
 .bc-chat__form-actions {
     display: flex;
     justify-content: flex-end;
+    gap: 8px;
 }
 
 .bc-chat__form-actions button {
@@ -722,6 +857,18 @@ html, body {
 
 .bc-chat__form-actions button:hover {
     filter: brightness(1.08);
+}
+
+.bc-chat__form-actions button:disabled {
+    opacity: 0.5;
+    cursor: default;
+    filter: none;
+}
+
+/* Same red as .bc-statusbar--error — deliberately distinct from the
+   primary Send button so Stop doesn't read as just another action. */
+.bc-chat__stop-btn {
+    background: #a83232;
 }
 
 /* --- Status bar --- */

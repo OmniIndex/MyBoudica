@@ -56,6 +56,17 @@
             : 'anonymous';
     }
 
+    // Mirrors chat-api.js's _authHeaders() - added 2026-08-26/27, this file
+    // never picked it up. Every oauth/* call below was sent with no
+    // Authorization header at all, so the backend's Bearer-token check
+    // (authenticate_request() in slm_cgi_utils.cpp) rejected them
+    // unconditionally with 401, regardless of whether the user's session/
+    // identity had resolved correctly.
+    function getAuthHeaders() {
+        const token = window.app && window.app.auth && window.app.auth.accessToken;
+        return token ? { Authorization: 'Bearer ' + token } : {};
+    }
+
     function esc(str) {
         return String(str || '')
             .replace(/&/g, '&amp;')
@@ -139,7 +150,7 @@
             // 1. Get all registered app keys for this domain
             const appsResp = await fetch(
                 `${base}/oauth/app/list?user_id=${encodeURIComponent(userId)}`,
-                { headers: { Accept: 'application/json' } }
+                { headers: { Accept: 'application/json', ...getAuthHeaders() } }
             );
             const appsData = await appsResp.json();
             if (!appsData.success) throw new Error(appsData.error || 'Failed to load services');
@@ -155,7 +166,7 @@
             const statuses = await Promise.allSettled(
                 _apps.map(app =>
                     fetch(`${base}/oauth/status?service=${encodeURIComponent(app.service_name)}&user_id=${encodeURIComponent(userId)}`,
-                        { headers: { Accept: 'application/json' } })
+                        { headers: { Accept: 'application/json', ...getAuthHeaders() } })
                         .then(r => r.json())
                         .then(d => ({ service: app.service_name, connected: Array.isArray(d.connected) ? d.connected.includes(app.service_name) : !!d.connected }))
                         .catch(() => ({ service: app.service_name, connected: false }))
@@ -230,7 +241,7 @@
             // Fetch the provider auth URL from the CGI
             const resp = await fetch(
                 `${base}/oauth/start?service=${encodeURIComponent(serviceName)}&user_id=${encodeURIComponent(userId)}`,
-                { headers: { Accept: 'application/json' } }
+                { headers: { Accept: 'application/json', ...getAuthHeaders() } }
             );
             const data = await resp.json();
 
@@ -274,7 +285,7 @@
         try {
             const resp = await fetch(`${base}/oauth/disconnect`, {
                 method:  'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                 body:    JSON.stringify({ service: serviceName, user_id: userId }),
             });
             const data = await resp.json();

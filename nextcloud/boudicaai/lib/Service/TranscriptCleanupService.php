@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace OCA\BoudicaAi\Service;
 
 use OCP\IConfig;
-use OCP\Http\Client\IClientService;
 use Psr\Log\LoggerInterface;
+use GuzzleHttp\Client;
 
 /**
  * Sends a raw call transcript to the Boudica inference server (boudi.ca)
@@ -49,17 +49,27 @@ use Psr\Log\LoggerInterface;
  */
 class TranscriptCleanupService {
     private IConfig $config;
-    private IClientService $clientService;
+    private Client $httpClient;
     private LoggerInterface $logger;
 
+    // Raw GuzzleHttp\Client rather than OCP\Http\Client\IClientService -
+    // same reason as BoudicaService.php (this class's own docblock says
+    // "same IClientService HTTP client" as that class, which was
+    // inaccurate even before that fix: IClientService's SSRF guard
+    // rejects this app's own configured api_endpoint - "Host ... violates
+    // local access rules" - since it doesn't resolve as a conventional
+    // public address from inside this stack's Docker network). Confirmed
+    // live 2026-09-05, found while verifying the automatic call-
+    // transcription flow end-to-end (this method was silently failing
+    // soft and falling back to the raw transcript on every real call,
+    // never actually producing the LLM-cleaned/summarized version).
     public function __construct(
         IConfig $config,
-        IClientService $clientService,
         LoggerInterface $logger
     ) {
         $this->config = $config;
-        $this->clientService = $clientService;
         $this->logger = $logger;
+        $this->httpClient = new Client();
     }
 
     public function isAvailable(): bool {
@@ -82,17 +92,40 @@ class TranscriptCleanupService {
             return null;
         }
 
+        // Rewritten 2026-09-05: this used to say "Do NOT summarize, shorten,
+        // or omit any actual content" - directly contradicting the class's
+        // own documented intent above ("produce a genuinely useful
+        // summary... not a lightly-cleaned verbatim transcript") and the
+        // actual reported symptom on the live server: with zero structure
+        // requested and an explicit ban on condensing, the model has
+        // nothing to do but hand back one long paragraph. Now genuinely
+        // asks for a structured summary, with a plain-text format (no
+        // markdown ** / # - TranscriptEmailService renders this inside a
+        // white-space:pre-wrap block, not through an HTML markdown
+        // renderer, so literal markdown syntax would just show up as-is).
         $prompt = "No Memory. The following is a raw, auto-generated transcript of a "
-            . "phone/video call, labeled by speaker with timestamps. Clean it up: fix "
-            . "obvious speech-to-text errors, remove filler words (um, uh) and crosstalk "
-            . "artifacts from overlapping speech, and improve readability. Do NOT "
-            . "summarize, shorten, or omit any actual content — every real statement made "
-            . "in the call should still be present in your output, just cleaned up. Keep "
-            . "the speaker labels.\n\nRaw transcript:\n\n{$rawTranscript}";
+            . "phone/video call. Produce a clear, well-organized summary for the "
+            . "participants — something someone can skim in under a minute, not a "
+            . "verbatim cleanup. Only include what is explicitly present in the "
+            . "transcript; never invent names, people, decisions, or events that "
+            . "weren't actually said.\n\n"
+            . "Format your response as plain text using exactly this structure — "
+            . "skip a section entirely if the transcript has nothing for it (don't "
+            . "write 'None'), and use blank lines between sections:\n\n"
+            . "OVERVIEW\n"
+            . "One or two sentences on what the call was about.\n\n"
+            . "KEY DISCUSSION POINTS\n"
+            . "- One bullet per topic actually discussed, each starting with \"- \".\n\n"
+            . "DECISIONS\n"
+            . "- Any concrete decisions that were made.\n\n"
+            . "ACTION ITEMS\n"
+            . "- Any follow-up tasks mentioned, naming who's responsible if that's "
+            . "clear from the transcript.\n\n"
+            . "Do not use markdown symbols like ** or #.\n\n"
+            . "Raw transcript:\n\n{$rawTranscript}";
 
         try {
-            $client = $this->clientService->newClient();
-            $response = $client->post($endpoint, [
+            $response = $this->httpClient->post($endpoint, [
                 'json' => [
                     'message' => $prompt,
                     'session_id' => 'transcript-cleanup-' . $callRowId,
@@ -107,6 +140,9 @@ class TranscriptCleanupService {
                     'use_rag' => false,
                 ],
                 'timeout' => 90,
+                // Same local/trial, no-external-exposure self-signed-cert
+                // tradeoff already applied to BoudicaService.php.
+                'verify' => false,
             ]);
 
             $data = json_decode($response->getBody(), true);

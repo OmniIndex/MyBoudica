@@ -43,5 +43,6 @@ Boudica Torc solves this industry wide challenge with truly Sovereign AI.]]></de
 	</commands>
 	<background-jobs>
 		<job>OCA\BoudicaAi\BackgroundJob\DigestPollJob</job>
+		<job>OCA\BoudicaAi\BackgroundJob\JanusTranscribeJob</job>
 	</background-jobs>
 </info>

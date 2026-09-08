@@ -191,6 +191,16 @@ async function handleAuthSuccess(user) {
             }
         });
 
+        // Check for a scheduled maintenance restart (non-blocking) - see
+        // showMaintenanceBanner()'s comment below and chat-api.js's
+        // getMaintenanceStatus(). Checked once per login, matching "banner push
+        // to all users when they logged in" rather than continuous polling.
+        app.api.getMaintenanceStatus().then(data => {
+            if (data) {
+                showMaintenanceBanner(data);
+            }
+        });
+
         // Load remote settings in the background.  Apply them and refresh the UI
         // only if there is actually something to restore, then enable ongoing sync.
         try {
@@ -216,6 +226,13 @@ async function handleAuthSuccess(user) {
         loadInboxItems().then(startInboxPolling);
         loadSentItems();
         startSharedInvitePolling();
+        // loadSharedChatsList() was the one exception to the rule above -
+        // setupSharedChats() (called from initializeApp(), before auth
+        // resolves) used to call it directly and unconditionally, firing
+        // "GET /shared_chats?user_id=anonymous" (403) on every page load
+        // before checkExistingSession() had a chance to populate identity.
+        // Belongs here with the rest of the auth-gated loads instead.
+        loadSharedChatsList();
 
         // Enable save-on-change only after the initial remote load has completed
         // so the first write back to the DB is not premature.
@@ -512,6 +529,7 @@ async function handleSendMessage(chatId, message) {
         // directly to the prompt; all other files go via multipart upload.
         let queuedFiles = [];
         let effectiveMessage = expandRulesInMessage(message);
+        effectiveMessage = appendChartFormatHint(effectiveMessage);
         if (app.documentHandler) {
             const { files, inlineText } = await app.documentHandler.prepareUpload();
             queuedFiles = files;
@@ -536,10 +554,16 @@ async function handleSendMessage(chatId, message) {
         const response = await app.api.sendMessage(
             chatId,
             effectiveMessage,
-            (content, isDone, auditId) => {
+            (content, isDone, auditId, thinking, liveThinking, statusMessage) => {
                 // Stream callback
                 if (!messageId) {
-                    // First chunk - server has received the prompt; stop the race line
+                    // First chunk - server has received the prompt; stop the race line.
+                    // A status/thinking_start event fires this too (before any answer
+                    // text exists yet), so the bubble - and a visible status line or
+                    // "Thinking..." panel - appears the moment the workflow starts,
+                    // not only once the full answer is ready. Without this, long
+                    // agentic/multi-task prompts show no activity at all until
+                    // everything is done, which reads as hung.
                     app.ui.stopRaceLine();
                     app.ui.removeTypingIndicator();
                     assistantMessage = {
@@ -551,15 +575,27 @@ async function handleSendMessage(chatId, message) {
                     app.ui.displayMessage(savedMessage);
                     // Activate the loading indicator on the new message
                     app.ui.showWorkingIndicator();
+                    if (statusMessage) {
+                        app.ui.updateAgenticStatus(messageId, statusMessage);
+                    }
+                    if (liveThinking) {
+                        app.ui.updateLiveThinking(messageId, liveThinking.active, liveThinking.text);
+                    }
                 } else {
                     // Update UI immediately on every token, but only persist to
                     // localStorage when the stream is done (avoids serialising the
                     // full chat history on every single token \u2014 a major source of
                     // GC pressure on long responses).
                     if (isDone) {
-                        app.storage.updateMessage(chatId, messageId, { content: content });
+                        app.storage.updateMessage(chatId, messageId, { content: content, thinking: thinking || null });
                     }
-                    app.ui.updateAssistantMessage(messageId, content, isDone);
+                    if (statusMessage) {
+                        app.ui.updateAgenticStatus(messageId, statusMessage);
+                    }
+                    if (liveThinking) {
+                        app.ui.updateLiveThinking(messageId, liveThinking.active, liveThinking.text);
+                    }
+                    app.ui.updateAssistantMessage(messageId, content, isDone, thinking);
                 }
                 
                 if (isDone) {
@@ -1145,6 +1181,43 @@ function _showHelpMessage() {
     app.ui.scrollToBottom();
     const ws = document.getElementById('welcomeScreen');
     if (ws) ws.classList.add('hidden');
+}
+
+/**
+ * Appends a short instruction telling the model to emit chart requests as a
+ * structured ```chart JSON block instead of hand-drawn SVG path math, which
+ * models are reliably bad at (wrong angles, overlapping wedges - confirmed
+ * live 2026-08-29 against a real model response: a "40%" slice actually
+ * covered 50% of the circle, using triangle vertices that never touched the
+ * chart's own center point). chat-ui.js's formatMessageContent() renders
+ * ```chart blocks by computing the actual wedge geometry in JS instead of
+ * trusting the model's math, so this is a real fix, not just better
+ * prompting - the append here only needs to get the model to emit that
+ * format, not to get its geometry right, which it still isn't reliably
+ * capable of.
+ *
+ * Keyword-gated (not sent on every message) purely to save prompt tokens on
+ * the common case - a false-negative here just means the model falls back
+ * to hand-drawn SVG (still renders, sanitized, just not guaranteed-correct
+ * geometry), not a broken response, so the keyword list errs toward
+ * catching real chart requests rather than being exhaustive.
+ */
+function appendChartFormatHint(text) {
+    if (!/\b(chart|graph|pie|plot|diagram|histogram|scatter|visuali[sz]e|visualisation|visualization)\b/i.test(text)) {
+        return text;
+    }
+    // "line" isn't in the trigger list on its own (too common a word,
+    // would false-positive constantly) - "line graph"/"line chart" still
+    // match via "graph"/"chart" above.
+    const hint = '\n\n(If this asks for a chart/graph/plot/diagram, output it as a single fenced '
+        + '```chart code block containing ONLY valid JSON, in one of these shapes depending on the '
+        + 'requested type - do not hand-draw SVG path coordinates for any of them: '
+        + 'pie/bar/histogram/line: {"type":"pie","title":"...","data":[{"label":"...","value":N}, ...]} '
+        + '(type is one of "pie","bar","histogram","line"); '
+        + 'scatter: {"type":"scatter","title":"...","data":[{"x":N,"y":N}, ...]}. '
+        + 'Values do not need to sum to 100 - they are proportions. If the request is not actually asking '
+        + 'for a chart, ignore this instruction entirely.)';
+    return text + hint;
 }
 
 /**
@@ -2246,6 +2319,70 @@ function showNotification(message, type = 'info') {
     }, 5000);
 }
 
+/**
+ * Show a persistent, full-width maintenance-restart warning banner - unlike
+ * showNotification() above (a 5s auto-dismissing corner toast), this stays
+ * until manually dismissed, since "the system restarts in N minutes" needs
+ * to actually be seen, not flash by. Dismissal is remembered per
+ * maintenance_id in localStorage, so re-showing only happens if the admin
+ * schedules a NEW restart (a different id) - not on every page load once
+ * acknowledged. See chat-api.js's getMaintenanceStatus() for the data this
+ * renders, and src/admin_api_full.cpp's handle_maintenance_schedule() for
+ * where an admin sets it.
+ */
+function showMaintenanceBanner(data) {
+    const dismissedId = localStorage.getItem('boudica_maintenance_dismissed_id');
+    if (String(data.maintenance_id) === dismissedId) {
+        return;
+    }
+
+    const existing = document.getElementById('maintenanceBanner');
+    if (existing) existing.remove();
+
+    const when = new Date(data.scheduled_at).toLocaleString();
+    const banner = document.createElement('div');
+    banner.id = 'maintenanceBanner';
+    banner.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        background: #f9ab00;
+        color: #1a1a1a;
+        padding: 12px 24px;
+        text-align: center;
+        font-size: 14px;
+        font-weight: 500;
+        z-index: 10001;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    `;
+    const text = document.createElement('span');
+    text.textContent = `Scheduled maintenance: the system will be unavailable for `
+        + `~${data.duration_minutes} minutes starting ${when}.`
+        + (data.message ? ` ${data.message}` : '');
+    const dismissBtn = document.createElement('button');
+    dismissBtn.textContent = '×';
+    dismissBtn.setAttribute('aria-label', 'Dismiss');
+    dismissBtn.style.cssText = `
+        background: none;
+        border: none;
+        color: #1a1a1a;
+        font-size: 20px;
+        line-height: 1;
+        margin-left: 16px;
+        cursor: pointer;
+        vertical-align: middle;
+    `;
+    dismissBtn.addEventListener('click', () => {
+        localStorage.setItem('boudica_maintenance_dismissed_id', String(data.maintenance_id));
+        banner.remove();
+    });
+
+    banner.appendChild(text);
+    banner.appendChild(dismissBtn);
+    document.body.appendChild(banner);
+}
+
 // Add notification and modal animations
 const style = document.createElement('style');
 style.textContent = `
@@ -2406,9 +2543,11 @@ function setupSharedChats() {
         if (list) list.classList.toggle('hidden');
     });
 
-    // Load list and seed known IDs so the invite poll only triggers
-    // the notification sound for chats that arrive AFTER page load.
-    loadSharedChatsList();
+    // Data load (seeds known IDs so the invite poll only triggers the
+    // notification sound for chats that arrive AFTER page load) is
+    // triggered by handleAuthSuccess() once identity is confirmed, NOT
+    // here - this function only wires up DOM listeners, which are safe
+    // before auth completes. See handleAuthSuccess()'s own comment.
 }
 
 // ── Collaboration invite notification ─────────────────────────────────────

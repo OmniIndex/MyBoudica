@@ -17,10 +17,15 @@
 
     const BoudicaCode = global.BoudicaCode || (global.BoudicaCode = {});
     const { bus, EVENTS } = BoudicaCode;
-    const { AppState } = BoudicaCode;
+    const { AppState, FileSearch } = BoudicaCode;
 
     function joinRelative(dir, name) {
         return dir ? `${dir.replace(/\/+$/, '')}/${name}` : name;
+    }
+
+    function dirname(path) {
+        const idx = path.lastIndexOf('/');
+        return idx === -1 ? '' : path.slice(0, idx);
     }
 
     class FileTree {
@@ -31,6 +36,7 @@
             this.collapsed = localStorage.getItem('bc_files_collapsed') === '1';
             this.clipboard = null; // { path, isDirectory, mode: 'copy' | 'cut' }
             this._menuEl = null;
+            this.searchActive = false; // true while showing search results instead of the normal directory listing
 
             this._onProjectSelected = this._onProjectSelected.bind(this);
             this._onCommandExecuted = this._onCommandExecuted.bind(this);
@@ -59,15 +65,22 @@
                         <button data-action="collapse" title="Collapse panel">⟨</button>
                         <button data-action="new-file" title="New file">+ File</button>
                         <button data-action="new-folder" title="New folder">+ Folder</button>
+                        <button data-action="search" title="Find in files">&#128269;</button>
                         <button data-action="refresh" title="Refresh">&#8635;</button>
                         <button data-action="download-zip" title="Download project as .zip">&#8681; Zip</button>
                     </div>
+                    <form class="bc-file-tree__search-bar" data-role="search-bar" hidden>
+                        <input type="text" data-role="search-input" placeholder="Find in files…" />
+                        <button type="button" data-action="search-close" title="Close search">&times;</button>
+                    </form>
                     <div class="bc-file-tree__breadcrumb" data-role="breadcrumb"></div>
                     <ul class="bc-file-tree__list" data-role="list"></ul>
                 </div>
             `;
             this.listEl = this.mountEl.querySelector('[data-role="list"]');
             this.breadcrumbEl = this.mountEl.querySelector('[data-role="breadcrumb"]');
+            this.searchBarEl = this.mountEl.querySelector('[data-role="search-bar"]');
+            this.searchInputEl = this.mountEl.querySelector('[data-role="search-input"]');
 
             this.mountEl.querySelector('[data-action="collapse"]')
                 .addEventListener('click', () => this._toggleCollapse());
@@ -79,6 +92,15 @@
                 .addEventListener('click', () => this.refresh(this.currentDir));
             this.mountEl.querySelector('[data-action="download-zip"]')
                 .addEventListener('click', () => this._downloadZip());
+            this.mountEl.querySelector('[data-action="search"]')
+                .addEventListener('click', () => this._toggleSearchBar());
+            this.mountEl.querySelector('[data-action="search-close"]')
+                .addEventListener('click', () => this._exitSearch());
+            this.searchBarEl.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const query = this.searchInputEl.value.trim();
+                if (query) this._runSearch(query);
+            });
 
             // Right-click on empty list space (not on an item) offers Paste,
             // same as a desktop file manager's background context menu.
@@ -89,6 +111,93 @@
             });
 
             this._applyCollapsedState(); // restore last session's collapsed/expanded state
+        }
+
+        // ─── Find in files ──────────────────────────────────────────
+
+        _toggleSearchBar() {
+            const showing = !this.searchBarEl.hidden;
+            if (showing) {
+                this._exitSearch();
+                return;
+            }
+            this.searchBarEl.hidden = false;
+            this.searchInputEl.focus();
+        }
+
+        /**
+         * Recursively greps the current project's files — see
+         * fileSearch.js's docblock for the tradeoffs. Refuses to run
+         * against the raw home directory (no project open): davClient is
+         * rooted there too, and searching it would mean recursively
+         * reading every file in the person's entire Nextcloud storage,
+         * not just a Boudica Code project.
+         */
+        async _runSearch(query) {
+            if (!AppState.getProjectRoot()) {
+                bus.emit(EVENTS.ERROR, { message: 'Open a project before searching — "Find in files" searches the current project, not your whole Nextcloud storage.' });
+                return;
+            }
+            this.searchActive = true;
+            this.searchInputEl.disabled = true;
+            this.breadcrumbEl.textContent = `Searching for "${query}"…`;
+            this.listEl.innerHTML = '';
+
+            let result;
+            try {
+                result = await FileSearch.searchProject(this.davClient, query);
+            } catch (err) {
+                bus.emit(EVENTS.ERROR, { message: 'Search failed', error: err });
+                this.searchInputEl.disabled = false;
+                return;
+            }
+            this.searchInputEl.disabled = false;
+            this._renderSearchResults(query, result);
+        }
+
+        _renderSearchResults(query, { matches, filesSearched, truncated }) {
+            this.breadcrumbEl.textContent = `${matches.length} match${matches.length === 1 ? '' : 'es'} for "${query}" across ${filesSearched} file${filesSearched === 1 ? '' : 's'}${truncated ? ' (truncated — narrow your search)' : ''}`;
+            this.listEl.innerHTML = '';
+
+            if (matches.length === 0) {
+                const empty = document.createElement('li');
+                empty.className = 'bc-file-tree__empty';
+                empty.textContent = 'No matches.';
+                this.listEl.appendChild(empty);
+                return;
+            }
+
+            for (const match of matches) {
+                const li = document.createElement('li');
+                li.className = 'bc-file-tree__item bc-file-tree__item--search-result is-file';
+                li.tabIndex = 0;
+                li.title = `${match.path}:${match.lineNumber}`;
+
+                const location = document.createElement('div');
+                location.className = 'bc-file-tree__result-location';
+                location.textContent = `${match.path}:${match.lineNumber}`;
+                li.appendChild(location);
+
+                const snippet = document.createElement('div');
+                snippet.className = 'bc-file-tree__result-snippet';
+                snippet.textContent = match.lineText || '(blank line)';
+                li.appendChild(snippet);
+
+                const open = () => bus.emit(EVENTS.FILE_OPEN_REQUESTED, { path: match.path, line: match.lineNumber });
+                li.addEventListener('click', open);
+                li.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+                });
+                this.listEl.appendChild(li);
+            }
+        }
+
+        /** Leaves search mode and goes back to the normal directory listing. */
+        _exitSearch() {
+            this.searchActive = false;
+            this.searchBarEl.hidden = true;
+            this.searchInputEl.value = '';
+            this.refresh(this.currentDir);
         }
 
         /** Shrinks the panel to just the toggle button so the editor can use the space, or restores it. Persisted across reloads. */
@@ -120,6 +229,17 @@
          *   the refresh button, breadcrumb) is relative to this afterward.
          */
         async refresh(relativeDir) {
+            // Any normal directory listing (breadcrumb click, folder open,
+            // toolbar refresh, project switch, an AI command's auto-refresh)
+            // supersedes the search UI — checked on bar visibility, not
+            // just searchActive, since the bar can be open with no search
+            // run yet (just opened, nothing typed) and should still close.
+            if (this.searchBarEl && !this.searchBarEl.hidden) {
+                this.searchActive = false;
+                this.searchBarEl.hidden = true;
+                this.searchInputEl.value = '';
+            }
+
             const dir = relativeDir !== undefined ? relativeDir : this.currentDir;
             try {
                 const entries = await this.davClient.list(dir);
@@ -223,6 +343,7 @@
 
         _itemMenuItems(entry, fullPath) {
             const items = [
+                { label: 'Rename', onClick: () => this._promptRename(fullPath, entry.isDirectory) },
                 { label: 'Cut', onClick: () => { this.clipboard = { path: fullPath, isDirectory: entry.isDirectory, mode: 'cut' }; } },
                 { label: 'Copy', onClick: () => { this.clipboard = { path: fullPath, isDirectory: entry.isDirectory, mode: 'copy' }; } },
             ];
@@ -311,6 +432,39 @@
 
         // ─── Item actions ───────────────────────────────────────────
 
+        /**
+         * WebDAV MOVE, used by both this and _pasteInto's cut path — moving
+         * a file/folder used to leave any open tab under the old path
+         * pointing at somewhere that no longer exists on disk (a further
+         * save there would silently write to the wrong place, or just
+         * fail). AppState.renameOpenFile() is a no-op if nothing under
+         * `from` happens to be open, so it's always safe to call.
+         */
+        async _moveAndSync(from, to) {
+            await this.davClient.move(from, to);
+            AppState.renameOpenFile(from, to);
+        }
+
+        async _promptRename(fullPath, isDirectory) {
+            const oldName = this._basename(fullPath);
+            const newName = global.prompt(`Rename "${oldName}" to:`, oldName);
+            if (!newName || newName === oldName) return;
+            if (newName.includes('/')) {
+                bus.emit(EVENTS.ERROR, { message: 'Names can\'t contain "/" — use Cut/Paste (or drag, once that exists) to move an item into a different folder.' });
+                return;
+            }
+
+            const parent = dirname(fullPath);
+            const destPath = parent ? `${parent}/${newName}` : newName;
+
+            try {
+                await this._moveAndSync(fullPath, destPath);
+                await this.refresh(this.currentDir);
+            } catch (err) {
+                bus.emit(EVENTS.ERROR, { message: `Could not rename "${oldName}"`, error: err });
+            }
+        }
+
         async _pasteInto(targetDir) {
             if (!this.clipboard) return;
             const { path: srcPath, mode } = this.clipboard;
@@ -326,7 +480,7 @@
                 if (mode === 'copy') {
                     await this.davClient.copy(srcPath, destPath);
                 } else {
-                    await this.davClient.move(srcPath, destPath);
+                    await this._moveAndSync(srcPath, destPath);
                     this.clipboard = null; // cut is one-shot, same as a desktop file manager
                 }
                 await this.refresh(this.currentDir);

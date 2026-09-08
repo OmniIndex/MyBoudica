@@ -8,12 +8,14 @@ use OCA\BoudicaAi\Command\TranscribeCallsCommand;
 use OCA\BoudicaAi\Command\JanusTranscriptionCommand;
 use OCA\BoudicaAi\Listener\TalkBotInvokeListener;
 use OCA\BoudicaAi\Listener\CallRecordingListener;
+use OCA\BoudicaAi\Listener\LogoutRedirectListener;
 use OCA\BoudicaAi\Login\BoudicaKeycloakLogin;
 use OCA\Talk\Events\BotInvokeEvent;
 use OCP\AppFramework\App;
 use OCP\AppFramework\Bootstrap\IBootContext;
 use OCP\AppFramework\Bootstrap\IBootstrap;
 use OCP\AppFramework\Bootstrap\IRegistrationContext;
+use OCP\AppFramework\Http\Events\BeforeTemplateRenderedEvent;
 
 class Application extends App implements IBootstrap {
     public const APP_ID = 'boudicaai';
@@ -46,6 +48,13 @@ class Application extends App implements IBootstrap {
         // min-version 31, so this deprecated-but-still-functional call is
         // used instead for broader compatibility.
         $context->registerAlternativeLogin(BoudicaKeycloakLogin::class);
+
+        // Fixes "logging out logs me straight back in" - see
+        // LogoutRedirectListener's own docblock for the full root cause.
+        // Fires on every authenticated page (not just login), so the
+        // logout-link interceptor it loads works wherever "Log out" is
+        // clicked from.
+        $context->registerEventListener(BeforeTemplateRenderedEvent::class, LogoutRedirectListener::class);
     }
 
     public function boot(IBootContext $context): void {

@@ -222,16 +222,25 @@ class ChatUI {
      * Show the chat interface after authentication
      */
     showChatInterface(user) {
-       
-        // Hide auth modal, show chat app
+        // NOTE: no userName/userEmail/userInitials/authModal here - Nextcloud's
+        // own top-bar already shows the current user and handles login/logout
+        // at the platform level, so this port drops the standalone product's
+        // in-page auth modal and sidebar user-info footer entirely (see
+        // templates/index.php). Those elements don't exist in this app's DOM,
+        // so referencing them here would throw on every login.
         this.chatApp.classList.remove('hidden');
         
         // Load chat history
         this.loadChatHistory();
         
-        // Load current or create new chat
+        // Load current or create new chat. Guard against a stale
+        // currentChatId pointer (deleted chat, trimmed by the 100-chat cap,
+        // or a remote-settings sync where current_chat_id and the chats
+        // array disagreed) - loadChat() silently no-ops when the chat isn't
+        // found, which previously left currentChatId permanently null and
+        // the send button/Enter key dead with no console error at all.
         const currentChatId = this.storage.getCurrentChatId();
-        if (currentChatId) {
+        if (currentChatId && this.storage.getChat(currentChatId)) {
             this.loadChat(currentChatId);
         } else {
             this.handleNewChat();
@@ -327,8 +336,6 @@ class ChatUI {
         // Send on Enter (without Shift)
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            const length = this.chatInput.value.trim().length;
-            this.sendBtn.disabled = length === 0 || length > 4000;
             if (!this.sendBtn.disabled) {
                 this.handleSendMessage();
             }
@@ -406,7 +413,18 @@ class ChatUI {
         
         if (isTyping) {
             messageDiv.classList.add('typing');
-            // Typing indicator removed - using working indicator instead
+            // Bouncing-dot placeholder shown from the moment the prompt is sent
+            // until the first stream chunk arrives (removeTypingIndicator() in
+            // app.js's stream callback) - without this the response bubble is
+            // just an empty box for however long prefill/retrieval takes before
+            // the first token, which reads as a hang rather than "working".
+            contentDiv.innerHTML = `
+                <div class="typing-indicator">
+                    <span class="typing-dot"></span>
+                    <span class="typing-dot"></span>
+                    <span class="typing-dot"></span>
+                </div>
+            `;
         } else {
             const formattedData = this.formatMessageContent(message.content);
             if (formattedData.type === 'html') {
@@ -432,7 +450,15 @@ class ChatUI {
             contentDiv.setAttribute('data-raw-content', message.content);
             contentDiv.setAttribute('data-view-mode', 'formatted'); // default to formatted view
         }
-        
+
+        // Thinking block goes before the final content, matching reading order
+        // (reasoning first, then the answer it led to).
+        if (message.role === 'assistant' && !isTyping && message.thinking) {
+            const thinkingWrapper = document.createElement('div');
+            thinkingWrapper.innerHTML = this._renderThinkingHtml(message.thinking);
+            messageDiv.appendChild(thinkingWrapper.firstElementChild);
+        }
+
         messageDiv.appendChild(contentDiv);
         
         // Add action buttons for assistant messages
@@ -509,7 +535,11 @@ class ChatUI {
             if (!isTyping) {
                 loadingDiv.classList.add('complete');
             }
-            loadingDiv.innerHTML = '<img src="../img/logoanimated.svg" alt="Loading..." style="width: 32px; height: 32px;">';
+            // Absolute path, not "img/...": this app lives under custom_apps,
+            // which config.php's apps_paths maps to URL prefix /custom_apps,
+            // not /apps - a bare relative path resolves against the current
+            // page's /apps/boudicaai/... URL and 404s (confirmed 2026-09-05).
+            loadingDiv.innerHTML = '<img src="/custom_apps/boudicaai/img/logoanimated.svg" alt="Loading..." style="width: 32px; height: 32px;">';
             messageDiv.appendChild(loadingDiv);
         }
         
@@ -526,6 +556,91 @@ class ChatUI {
         this.scrollToBottom();
         
         return messageDiv;
+    }
+
+    /**
+     * Build the collapsible "thinking" block shown above an assistant message's
+     * final answer. Collapsed by default (matches ChatGPT/Claude's extended-
+     * thinking pattern) — the model's raw chain-of-thought, plain text so it's
+     * rendered as-is rather than reformatted as markdown.
+     */
+    _renderThinkingHtml(thinking) {
+        if (!thinking) return '';
+        return `
+            <details class="thinking-block">
+                <summary class="thinking-summary">Show thinking</summary>
+                <div class="thinking-content">${this.escapeHtml(thinking)}</div>
+            </details>
+        `;
+    }
+
+    /**
+     * Show/update a one-line agentic progress status ("Working out the best
+     * way to approach this…", "Step 2 of 3…", etc.) above the message while
+     * there's no real content yet. Each call replaces the previous text;
+     * _clearAgenticStatus removes it once real thinking or answer content
+     * starts arriving, since the narration is stale at that point.
+     */
+    updateAgenticStatus(messageId, message) {
+        const messageEl = this.chatMessages.querySelector(`[data-message-id="${messageId}"]`);
+        if (!messageEl) return;
+        const contentDiv = messageEl.querySelector('.message-content');
+        if (!contentDiv) return;
+
+        let statusEl = messageEl.querySelector('.agentic-status');
+        if (!statusEl) {
+            statusEl = document.createElement('div');
+            statusEl.className = 'agentic-status';
+            messageEl.insertBefore(statusEl, contentDiv);
+        }
+        statusEl.textContent = message;
+    }
+
+    /** Removes the agentic status line, if present. */
+    _clearAgenticStatus(messageEl) {
+        const statusEl = messageEl.querySelector('.agentic-status');
+        if (statusEl) statusEl.remove();
+    }
+
+    /**
+     * Live-update the collapsible thinking panel as reasoning streams in.
+     * Creates the panel (expanded) on the first call for a message, appends
+     * text on each subsequent call, and auto-collapses it the moment
+     * thinking ends — so by the time the real answer starts appearing the
+     * panel is already out of the way instead of sitting open next to it.
+     * @param {string} messageId
+     * @param {boolean} active - true while still streaming reasoning
+     * @param {string} text - full reasoning text accumulated so far
+     */
+    updateLiveThinking(messageId, active, text) {
+        const messageEl = this.chatMessages.querySelector(`[data-message-id="${messageId}"]`);
+        if (!messageEl) return;
+        this._clearAgenticStatus(messageEl);
+
+        let details = messageEl.querySelector('.thinking-block');
+        if (!details) {
+            const contentDiv = messageEl.querySelector('.message-content');
+            if (!contentDiv) return;
+            const wrapper = document.createElement('div');
+            wrapper.innerHTML = `
+                <details class="thinking-block" open>
+                    <summary class="thinking-summary">Thinking…</summary>
+                    <div class="thinking-content"></div>
+                </details>
+            `;
+            details = wrapper.firstElementChild;
+            messageEl.insertBefore(details, contentDiv);
+        }
+
+        const contentEl = details.querySelector('.thinking-content');
+        if (contentEl) {
+            contentEl.textContent = text;
+            contentEl.scrollTop = contentEl.scrollHeight;
+        }
+
+        const summaryEl = details.querySelector('.thinking-summary');
+        details.open = active;
+        if (summaryEl) summaryEl.textContent = active ? 'Thinking…' : 'Show thinking';
     }
 
     /**
@@ -570,7 +685,18 @@ class ChatUI {
                 type: 'html'
             };
         }
-        
+
+        // Chart-spec blocks (```chart fenced JSON, see appendChartFormatHint()
+        // in app.js) and any raw <svg> the model draws directly both render
+        // inline in the message bubble (unlike the isHTML/flyout-panel path
+        // above, which is for full documents) - see renderChartBlocks() and
+        // sanitizeInlineSvg() below for why they're handled differently:
+        // chart-spec SVG is generated by our own code (real trigonometry, no
+        // sanitization needed), raw model-drawn SVG is untrusted and must be
+        // sanitized before ever reaching the DOM.
+        content = this.renderChartBlocks(content);
+        content = this.sanitizeInlineSvg(content);
+
         // Content is Markdown - parse and render
         if (typeof marked !== 'undefined') {
             try {
@@ -680,6 +806,561 @@ class ChatUI {
         );
 
         return text;
+    }
+
+    /**
+     * Finds ```chart fenced JSON blocks and replaces each with an inline
+     * SVG chart computed by this function's own trigonometry - not the
+     * model's. Confirmed live 2026-08-29: models reliably get hand-drawn
+     * pie-chart path math wrong (wedges that don't touch the circle's own
+     * center, angles that don't match the stated percentages, overlapping
+     * slices) - asking the model to "double check" its own geometry doesn't
+     * fix this, since self-checking requires the same math skill it just
+     * failed at. This function makes the geometry correct by construction
+     * instead: real angle = value/total * 360, standard SVG arc-path
+     * formula, so wedges always tile the circle exactly with no overlap.
+     *
+     * Placeholder-token substitution (not string-splitting around the
+     * match) so any markdown before/after/between multiple chart blocks
+     * still parses as one coherent document through marked afterward.
+     */
+    renderChartBlocks(content) {
+        // Accepts ANY fence language tag (or none) - confirmed live
+        // 2026-08-29 that the model doesn't reliably use the ```chart tag
+        // it's told to, even when explicitly instructed (see
+        // appendChartFormatHint() in app.js): it used ```json once, then
+        // an untagged/differently-tagged block another time. Safe to be
+        // this permissive because generateChartSvg()'s own structural shape
+        // check (findChartSpec()) is the real gate - a fenced block that
+        // isn't valid JSON, or doesn't contain a {label,value} array
+        // anywhere in it, just falls through to normal code-block
+        // rendering, unchanged.
+        const blockPattern = /```\w*\s*\n([\s\S]*?)```/gi;
+        const blocks = [];
+        let result = content.replace(blockPattern, (match, jsonText) => {
+            let renderedHtml;
+            try {
+                const spec = JSON.parse(jsonText.trim());
+                renderedHtml = this.generateChartSvg(spec);
+            } catch (err) {
+                renderedHtml = null;
+            }
+            // Malformed/unsupported spec: fall back to showing the block as
+            // plain text (via marked's own code-fence rendering) rather than
+            // silently dropping it - leave the original match untouched.
+            if (!renderedHtml) return match;
+            blocks.push(renderedHtml);
+            return `%%BOUDICA_CHART_${blocks.length - 1}%%`;
+        });
+        blocks.forEach((html, i) => {
+            result = result.replace(`%%BOUDICA_CHART_${i}%%`, html);
+        });
+
+        // Last resort: a bare, unfenced chart-spec object directly in the
+        // text - confirmed live 2026-08-29 as a real case, not
+        // hypothetical (the model has emitted JSON with no code fence at
+        // all). extractJsonObjects() finds balanced {...} substrings via a
+        // brace counter (regex can't reliably match nested braces);
+        // findChartSpec() is still the real gate, so this only fires on
+        // something that actually parses as JSON and structurally
+        // contains a {label,value} array - not on arbitrary prose braces.
+        const bareObjects = this.extractJsonObjects(result);
+        for (let i = bareObjects.length - 1; i >= 0; i--) {
+            const obj = bareObjects[i];
+            const rendered = this.generateChartSvg(obj.value);
+            if (!rendered) continue;
+            result = result.slice(0, obj.start) + rendered + result.slice(obj.end);
+        }
+
+        return result;
+    }
+
+    /**
+     * Finds balanced top-level {...} substrings in text via a brace
+     * counter (not regex - nested braces can't be matched reliably with
+     * regex) and returns each one that parses as valid JSON, with its
+     * position in the original string. See renderChartBlocks()'s bare-
+     * object fallback for why this exists.
+     */
+    extractJsonObjects(text) {
+        const results = [];
+        let depth = 0, start = -1;
+        for (let i = 0; i < text.length; i++) {
+            const c = text[i];
+            if (c === '{') {
+                if (depth === 0) start = i;
+                depth++;
+            } else if (c === '}') {
+                if (depth > 0) {
+                    depth--;
+                    if (depth === 0 && start !== -1) {
+                        const candidate = text.slice(start, i + 1);
+                        try {
+                            results.push({ start, end: i + 1, value: JSON.parse(candidate) });
+                        } catch (err) {
+                            // Not valid JSON on its own (e.g. a fragment of prose
+                            // or code that merely contains braces) - skip it.
+                        }
+                        start = -1;
+                    }
+                }
+            }
+        }
+        return results;
+    }
+
+    /**
+     * Normalizes a raw chart-type string (from wherever the model put it -
+     * key name varies, see findChartType()) to one of 'pie'|'bar'|
+     * 'histogram'|'scatter'|'line', or null if it isn't a recognized type.
+     */
+    chartTypeFromString(v) {
+        if (typeof v !== 'string') return null;
+        const s = v.trim().toLowerCase().replace(/[\s_-]+/g, '');
+        if (s === 'pie') return 'pie';
+        if (s === 'bar') return 'bar';
+        if (s === 'histogram') return 'histogram';
+        if (s === 'scatter' || s === 'scatterplot') return 'scatter';
+        if (s === 'line' || s === 'linegraph' || s === 'linechart') return 'line';
+        return null;
+    }
+
+    /**
+     * Walks a parsed JSON value looking for ANY string that names a
+     * supported chart type (see chartTypeFromString()), regardless of
+     * which key it's under - confirmed live 2026-08-29 the model has used
+     * "type" once and "chart_type" another time for the exact same thing.
+     * Used to decide which data-shape finder to use (findChartSpec() for
+     * pie/bar/histogram/line, findScatterSpec() for scatter - scatter
+     * needs numeric x/y pairs, not label+value, so the right finder has to
+     * be chosen before either one runs). Returns null (caller defaults to
+     * 'pie') if nothing matches.
+     */
+    findChartType(obj, depth = 0) {
+        if (depth > 4 || obj === null || typeof obj !== 'object') return null;
+        if (Array.isArray(obj)) {
+            for (const item of obj) {
+                const found = this.findChartType(item, depth + 1);
+                if (found) return found;
+            }
+            return null;
+        }
+        for (const v of Object.values(obj)) {
+            const t = this.chartTypeFromString(v);
+            if (t) return t;
+        }
+        for (const v of Object.values(obj)) {
+            const found = this.findChartType(v, depth + 1);
+            if (found) return found;
+        }
+        return null;
+    }
+
+    /**
+     * True if d has at least two number-valued fields - the generic shape
+     * of a scatter point, regardless of field names (x/y, or anything
+     * else - see extractScatterPoint()).
+     */
+    isScatterPointLike(d) {
+        if (!d || typeof d !== 'object' || Array.isArray(d)) return false;
+        return Object.values(d).filter(v => typeof v === 'number').length >= 2;
+    }
+
+    /** Prefers explicit x/y keys; otherwise the first two numeric fields, in order. */
+    extractScatterPoint(d) {
+        if (typeof d.x === 'number' && typeof d.y === 'number') return { x: d.x, y: d.y };
+        const nums = Object.values(d).filter(v => typeof v === 'number');
+        return { x: nums[0], y: nums[1] };
+    }
+
+    /**
+     * Same idea as findChartSpec(), but for scatter data: an array of
+     * {x, y}-like objects (any field names, see isScatterPointLike()) or
+     * an array of [x, y] two-element numeric tuples.
+     */
+    findScatterSpec(obj, depth = 0) {
+        if (depth > 4 || obj === null || typeof obj !== 'object' || Array.isArray(obj)) {
+            return null;
+        }
+        const title = typeof obj.title === 'string' ? obj.title : null;
+
+        for (const key of Object.keys(obj)) {
+            const val = obj[key];
+            if (Array.isArray(val) && val.length > 0) {
+                if (val.every(d => this.isScatterPointLike(d))) {
+                    return { points: val.map(d => this.extractScatterPoint(d)), title };
+                }
+                if (val.every(d => Array.isArray(d) && d.length >= 2 &&
+                                    typeof d[0] === 'number' && typeof d[1] === 'number')) {
+                    return { points: val.map(d => ({ x: d[0], y: d[1] })), title };
+                }
+            }
+        }
+        for (const key of Object.keys(obj)) {
+            const found = this.findScatterSpec(obj[key], depth + 1);
+            if (found) return found;
+        }
+        return null;
+    }
+
+    /**
+     * True if d is an object with at least one string-valued field and at
+     * least one number-valued field - the generic shape of a single chart
+     * data point, regardless of what the model happened to name those two
+     * fields (label/value, sector/count, name/amount, category/total, ...).
+     * Confirmed live 2026-08-29 as a real case: {"sector":"...","count":N}
+     * was rejected outright when this only recognized literal "label"/
+     * "value" keys.
+     */
+    isChartPointLike(d) {
+        if (!d || typeof d !== 'object' || Array.isArray(d)) return false;
+        let hasString = false, hasNumber = false;
+        for (const v of Object.values(d)) {
+            if (typeof v === 'string') hasString = true;
+            else if (typeof v === 'number') hasNumber = true;
+        }
+        return hasString && hasNumber;
+    }
+
+    /**
+     * Extracts {label, value} from a chart-point-like object, using
+     * whichever fields are the first string-valued and first number-valued
+     * ones found (key names ignored - see isChartPointLike()).
+     */
+    extractChartPoint(d) {
+        let label = null, value = null;
+        for (const v of Object.values(d)) {
+            if (label === null && typeof v === 'string') label = v;
+            else if (value === null && typeof v === 'number') value = v;
+        }
+        return { label, value };
+    }
+
+    /**
+     * Walks a parsed JSON object/array looking for the first array of
+     * chart-point-like objects (see isChartPointLike()); a plain
+     * {label: value, ...} map (confirmed live 2026-08-29 as a real shape
+     * the model used for "data" instead of an array); or a Chart.js-style
+     * pair of parallel arrays (labels/categories/names + values/data/counts,
+     * same length) - regardless of what key(s) any of these are nested
+     * under, and regardless of the field names used inside each data point.
+     * Returns {data, title, chartType} (title from a sibling "title" key,
+     * chartType from any sibling string value matching "pie"/"bar" -
+     * confirmed live 2026-08-29 the model used "chart_type" one time and
+     * "type" another - defaults to null, caller decides the fallback) or
+     * null. Depth-limited to 4 to bound the search on deeply nested/
+     * unrelated JSON.
+     *
+     * This function has been widened four times in one session as the
+     * model produced a new shape each attempt despite being told the exact
+     * format to use - see appendChartFormatHint() in app.js. That pattern
+     * is the actual reason this searches structurally instead of expecting
+     * one shape: a model's compliance with an exact JSON schema isn't
+     * reliable, so the parser has to be permissive by design rather than
+     * patched reactively forever.
+     */
+    findChartSpec(obj, depth = 0) {
+        if (depth > 4 || obj === null || typeof obj !== 'object' || Array.isArray(obj)) {
+            return null;
+        }
+
+        const title = typeof obj.title === 'string' ? obj.title : null;
+        let chartType = null;
+        for (const v of Object.values(obj)) {
+            const t = this.chartTypeFromString(v);
+            if (t) { chartType = t; break; }
+        }
+
+        // Chart.js-style parallel arrays at this level.
+        const labelKeys = ['labels', 'categories', 'names'];
+        const valueKeys = ['values', 'data', 'counts'];
+        for (const lk of labelKeys) {
+            for (const vk of valueKeys) {
+                const labels = obj[lk], values = obj[vk];
+                if (Array.isArray(labels) && Array.isArray(values) &&
+                    labels.length > 0 && labels.length === values.length &&
+                    labels.every(l => typeof l === 'string') && values.every(v => typeof v === 'number')) {
+                    return { data: labels.map((label, i) => ({ label, value: values[i] })), title, chartType };
+                }
+            }
+        }
+
+        // Real Chart.js config shape - confirmed live 2026-08-29 as an
+        // actual case, not hypothetical: {labels:[...], datasets:[{data:
+        // [...], label:"...", backgroundColor:"..."}]}. The values array
+        // is nested inside the first dataset object here, not a sibling
+        // of "labels" the way the parallel-arrays check above expects -
+        // genuinely different shape, worth its own explicit check rather
+        // than trying to force it through the generic one. Only the first
+        // dataset is used; multi-series charts aren't rendered specially.
+        if (Array.isArray(obj.labels) && obj.labels.length > 0 && obj.labels.every(l => typeof l === 'string') &&
+            Array.isArray(obj.datasets) && obj.datasets.length > 0) {
+            const firstDataset = obj.datasets[0];
+            if (firstDataset && Array.isArray(firstDataset.data) &&
+                firstDataset.data.length === obj.labels.length &&
+                firstDataset.data.every(v => typeof v === 'number')) {
+                return {
+                    data: obj.labels.map((label, i) => ({ label, value: firstDataset.data[i] })),
+                    title,
+                    chartType
+                };
+            }
+        }
+
+        for (const key of Object.keys(obj)) {
+            const val = obj[key];
+            // Array of chart-point-like objects (any string+number field pair).
+            if (Array.isArray(val) && val.length > 0 && val.every(d => this.isChartPointLike(d))) {
+                return { data: val.map(d => this.extractChartPoint(d)), title, chartType };
+            }
+            // Plain {label: value, ...} map.
+            if (val && typeof val === 'object' && !Array.isArray(val)) {
+                const entries = Object.entries(val);
+                if (entries.length > 0 && entries.every(([, v]) => typeof v === 'number')) {
+                    return { data: entries.map(([label, value]) => ({ label, value })), title, chartType };
+                }
+            }
+        }
+
+        for (const key of Object.keys(obj)) {
+            const found = this.findChartSpec(obj[key], depth + 1);
+            if (found) return found;
+        }
+        return null;
+    }
+
+    /**
+     * Dispatches to a real (trigonometry/geometry-computed, not model-
+     * drawn) chart renderer - see renderChartBlocks() for why this exists
+     * at all. Supports pie/bar/histogram/line (all share the label+value
+     * data shape via findChartSpec()) and scatter (numeric x/y pairs via
+     * findScatterSpec() - a genuinely different shape, so chart type has
+     * to be determined FIRST to pick the right finder). Unrecognized
+     * chartType or a malformed/empty spec returns null so the caller falls
+     * back to showing the raw block instead of a blank space. Defaults to
+     * 'pie' when findChartType() couldn't determine one.
+     */
+    generateChartSvg(rawSpec) {
+        if (!rawSpec) return null;
+        // Don't expect a specific top-level shape - confirmed live
+        // 2026-08-29 across several consecutive attempts that the model
+        // uses a different wrapper key, data shape, and field names every
+        // time despite being told the exact format to emit. Chasing each
+        // new variant isn't a fix, it's whack-a-mole - findChartSpec()/
+        // findScatterSpec() below search the parsed JSON structurally for
+        // chart-shaped data wherever it's nested, under whatever key names
+        // were used. This is robust to any wrapper the model invents, not
+        // just the ones seen so far.
+        const chartType = this.findChartType(rawSpec) || 'pie';
+
+        if (chartType === 'scatter') {
+            const found = this.findScatterSpec(rawSpec);
+            if (!found) return null;
+            const points = found.points.filter(p => typeof p.x === 'number' && typeof p.y === 'number');
+            if (points.length === 0) return null;
+            return this.generateScatterSvg(points, found.title);
+        }
+
+        const found = this.findChartSpec(rawSpec);
+        if (!found) return null;
+        const data = found.data.filter(d => d && typeof d.value === 'number' && d.value > 0 && d.label);
+        if (data.length === 0) return null;
+
+        if (chartType === 'bar' || chartType === 'histogram') {
+            return this.generateBarChartSvg(data, found.title);
+        }
+        if (chartType === 'line') {
+            return this.generateLineChartSvg(data, found.title);
+        }
+        return this.generatePieChartSvg(data, found.title);
+    }
+
+    generatePieChartSvg(data, title) {
+        const total = data.reduce((sum, d) => sum + d.value, 0);
+        const cx = 150, cy = 150, r = 120;
+        const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFD93D', '#A78BFA', '#F783AC', '#63E6BE'];
+
+        let cumulativeDeg = 0;
+        const slices = data.map((d, i) => {
+            const sliceDeg = (d.value / total) * 360;
+            const startDeg = cumulativeDeg;
+            cumulativeDeg += sliceDeg;
+            const endDeg = cumulativeDeg;
+
+            // Standard SVG pie-wedge path: center -> line to arc start ->
+            // arc to arc end -> close back to center. This (not a triangle
+            // between two arbitrary edge points) is what guarantees wedges
+            // that actually meet at the center with no gap/overlap.
+            const startRad = (startDeg - 90) * Math.PI / 180;
+            const endRad = (endDeg - 90) * Math.PI / 180;
+            const x1 = cx + r * Math.cos(startRad);
+            const y1 = cy + r * Math.sin(startRad);
+            const x2 = cx + r * Math.cos(endRad);
+            const y2 = cy + r * Math.sin(endRad);
+            const largeArc = sliceDeg > 180 ? 1 : 0;
+
+            return {
+                path: `M${cx},${cy} L${x1.toFixed(2)},${y1.toFixed(2)} A${r},${r} 0 ${largeArc} 1 ${x2.toFixed(2)},${y2.toFixed(2)} Z`,
+                color: colors[i % colors.length],
+                label: d.label,
+                pct: ((d.value / total) * 100).toFixed(1)
+            };
+        });
+
+        // Single-line, no incidental leading whitespace - CommonMark treats
+        // a line indented 4+ spaces as a literal indented code block, not
+        // HTML. Confirmed live 2026-08-29: this generated HTML gets
+        // substituted into markdown source that then goes through
+        // marked.parse(), and a multi-line template literal's own JS
+        // source indentation (12+ spaces per line) was carried straight
+        // into the output, so everything past the first line rendered as
+        // literal escaped text instead of real markup.
+        const legendItems = slices.map(s =>
+            `<div style="display:flex;align-items:center;gap:6px;margin:2px 0;font-size:13px;">`
+            + `<span style="width:12px;height:12px;background:${s.color};display:inline-block;border-radius:2px;flex-shrink:0;"></span>`
+            + `<span>${this.escapeHtml(s.label)} — ${s.pct}%</span></div>`
+        ).join('');
+
+        const titleHtml = title
+            ? `<div style="font-weight:600;margin-bottom:8px;">${this.escapeHtml(title)}</div>`
+            : '';
+
+        return `<div class="boudica-chart" style="max-width:420px;margin:12px 0;">`
+            + titleHtml
+            + `<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">`
+            + `<svg width="220" height="220" viewBox="0 0 300 300">`
+            + slices.map(s => `<path d="${s.path}" fill="${s.color}" stroke="white" stroke-width="2"/>`).join('')
+            + `</svg><div>${legendItems}</div></div></div>`;
+    }
+
+    /**
+     * Also used for 'histogram' - the KYC/fraud/etc. data this renders is
+     * genuinely categorical (sector counts), not continuous binned data,
+     * so a real histogram (bars touching, continuous numeric x-axis) isn't
+     * a meaningfully different chart for anything actually requested so
+     * far. Revisit with a dedicated renderer if that changes.
+     */
+    generateBarChartSvg(data, title) {
+        const width = 420, marginLeft = 150, marginRight = 50, rowHeight = 34, barHeightPx = 20;
+        const height = data.length * rowHeight + 20;
+        const chartWidth = width - marginLeft - marginRight;
+        const maxValue = Math.max(...data.map(d => d.value));
+        const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFD93D', '#A78BFA', '#F783AC', '#63E6BE'];
+
+        const bars = data.map((d, i) => {
+            const barWidth = Math.max(2, (d.value / maxValue) * chartWidth);
+            const y = 10 + i * rowHeight;
+            const textY = y + barHeightPx / 2 + 4;
+            const color = colors[i % colors.length];
+            return `<text x="${marginLeft - 8}" y="${textY.toFixed(1)}" text-anchor="end" font-size="12" fill="currentColor">${this.escapeHtml(d.label)}</text>`
+                + `<rect x="${marginLeft}" y="${y}" width="${barWidth.toFixed(1)}" height="${barHeightPx}" fill="${color}" rx="2"/>`
+                + `<text x="${(marginLeft + barWidth + 6).toFixed(1)}" y="${textY.toFixed(1)}" font-size="12" fill="currentColor">${d.value}</text>`;
+        }).join('');
+
+        const titleHtml = title
+            ? `<div style="font-weight:600;margin-bottom:8px;">${this.escapeHtml(title)}</div>`
+            : '';
+
+        return `<div class="boudica-chart" style="max-width:${width}px;margin:12px 0;">`
+            + titleHtml
+            + `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="color:var(--text-primary,#333);">`
+            + bars
+            + `</svg></div>`;
+    }
+
+    /** Points evenly spaced along x by index (categorical, matching bar/pie's label+value shape), y scaled to the value range. */
+    generateLineChartSvg(data, title) {
+        const width = 420, height = 240, marginLeft = 40, marginRight = 20, marginTop = 20, marginBottom = 50;
+        const plotW = width - marginLeft - marginRight;
+        const plotH = height - marginTop - marginBottom;
+        const values = data.map(d => d.value);
+        const minV = Math.min(0, ...values);
+        const maxV = Math.max(...values);
+        const range = (maxV - minV) || 1;
+        const stepX = data.length > 1 ? plotW / (data.length - 1) : 0;
+
+        const points = data.map((d, i) => ({
+            x: marginLeft + i * stepX,
+            y: marginTop + plotH - ((d.value - minV) / range) * plotH,
+            label: d.label
+        }));
+
+        const polylinePoints = points.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+        const dots = points.map(p => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="4" fill="#4ECDC4"/>`).join('');
+        const xLabels = points.map(p =>
+            `<text x="${p.x.toFixed(1)}" y="${(marginTop + plotH + 16).toFixed(1)}" text-anchor="middle" font-size="11" fill="currentColor">${this.escapeHtml(p.label)}</text>`
+        ).join('');
+        const axisLine = `<line x1="${marginLeft}" y1="${(marginTop + plotH).toFixed(1)}" x2="${(marginLeft + plotW).toFixed(1)}" y2="${(marginTop + plotH).toFixed(1)}" stroke="currentColor" stroke-opacity="0.3"/>`;
+
+        const titleHtml = title
+            ? `<div style="font-weight:600;margin-bottom:8px;">${this.escapeHtml(title)}</div>`
+            : '';
+
+        return `<div class="boudica-chart" style="max-width:${width}px;margin:12px 0;">`
+            + titleHtml
+            + `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="color:var(--text-primary,#333);">`
+            + axisLine
+            + `<polyline points="${polylinePoints}" fill="none" stroke="#4ECDC4" stroke-width="2"/>`
+            + dots + xLabels
+            + `</svg></div>`;
+    }
+
+    /** Both axes auto-scaled to the data's own min/max - see findScatterSpec() for the x/y data shape this expects. */
+    generateScatterSvg(points, title) {
+        const width = 320, height = 260, margin = 30;
+        const xs = points.map(p => p.x), ys = points.map(p => p.y);
+        const xMin = Math.min(...xs), xMax = Math.max(...xs);
+        const yMin = Math.min(...ys), yMax = Math.max(...ys);
+        const xRange = (xMax - xMin) || 1, yRange = (yMax - yMin) || 1;
+        const plotW = width - margin * 2, plotH = height - margin * 2;
+        const scaleX = x => margin + ((x - xMin) / xRange) * plotW;
+        const scaleY = y => (height - margin) - ((y - yMin) / yRange) * plotH;
+
+        const dots = points.map(p =>
+            `<circle cx="${scaleX(p.x).toFixed(1)}" cy="${scaleY(p.y).toFixed(1)}" r="4" fill="#4ECDC4" fill-opacity="0.8"/>`
+        ).join('');
+        const axisLines = `<line x1="${margin}" y1="${height - margin}" x2="${width - margin}" y2="${height - margin}" stroke="currentColor" stroke-opacity="0.3"/>`
+            + `<line x1="${margin}" y1="${margin}" x2="${margin}" y2="${height - margin}" stroke="currentColor" stroke-opacity="0.3"/>`;
+
+        const titleHtml = title
+            ? `<div style="font-weight:600;margin-bottom:8px;">${this.escapeHtml(title)}</div>`
+            : '';
+
+        return `<div class="boudica-chart" style="max-width:${width}px;margin:12px 0;">`
+            + titleHtml
+            + `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="color:var(--text-primary,#333);">`
+            + axisLines + dots
+            + `</svg></div>`;
+    }
+
+    /**
+     * Sanitizes any raw <svg>...</svg> the model draws directly (as
+     * opposed to a ```chart block, see renderChartBlocks() above) before
+     * letting it reach the DOM. Required because marked.setOptions
+     * ({sanitize:false}) already lets raw HTML blocks through untouched,
+     * and SVG can carry <script>/on*="" attributes that execute on
+     * insertion via innerHTML - this content is fully model-controlled (a
+     * crafted prompt, or the model quoting back RAG-injected content), so
+     * it must never reach the DOM unsanitized. Same placeholder-token
+     * approach as renderChartBlocks() for the same reason.
+     */
+    sanitizeInlineSvg(content) {
+        if (typeof DOMPurify === 'undefined') return content;
+        const svgPattern = /<svg[\s>][\s\S]*?<\/svg>/gi;
+        if (!svgPattern.test(content)) return content;
+        svgPattern.lastIndex = 0;
+
+        const blocks = [];
+        const withPlaceholders = content.replace(svgPattern, (match) => {
+            blocks.push(DOMPurify.sanitize(match, { USE_PROFILES: { svg: true, svgFilters: true } }));
+            return `%%BOUDICA_RAWSVG_${blocks.length - 1}%%`;
+        });
+
+        let result = withPlaceholders;
+        blocks.forEach((html, i) => {
+            result = result.replace(`%%BOUDICA_RAWSVG_${i}%%`, html);
+        });
+        return result;
     }
 
     /**
@@ -1849,7 +2530,7 @@ class ChatUI {
      * @param {string} content  - accumulated response text so far
      * @param {boolean} isDone  - true when the stream is finished
      */
-    updateAssistantMessage(messageId, content, isDone = false) {
+    updateAssistantMessage(messageId, content, isDone = false, thinking = null) {
         if (!isDone) {
             // Throttle: store the latest content and schedule one DOM update per
             // animation frame.  If a frame is already scheduled for this message,
@@ -1879,13 +2560,30 @@ class ChatUI {
         if (this._streamPending) {
             this._streamPending.delete(messageId);
         }
-        this._applyAssistantMessageUpdate(messageId, content, true);
+        this._applyAssistantMessageUpdate(messageId, content, true, thinking);
     }
 
     /** Internal: actually update the DOM for an assistant message. */
-    _applyAssistantMessageUpdate(messageId, content, isDone) {
+    _applyAssistantMessageUpdate(messageId, content, isDone, thinking = null) {
         const messageEl = this.chatMessages.querySelector(`[data-message-id="${messageId}"]`);
         if (messageEl) {
+            // Real answer content has started (or the response is done) —
+            // any agentic progress narration is now stale.
+            if (content && content.trim()) {
+                this._clearAgenticStatus(messageEl);
+            }
+            // On completion, insert the thinking block (collapsed) before the
+            // content div, instead of letting the reasoning that was visible
+            // mid-stream just vanish when content gets replaced with the
+            // server's final, already-stripped answer below.
+            if (isDone && thinking && !messageEl.querySelector('.thinking-block')) {
+                const contentDivForThinking = messageEl.querySelector('.message-content');
+                const thinkingWrapper = document.createElement('div');
+                thinkingWrapper.innerHTML = this._renderThinkingHtml(thinking);
+                if (contentDivForThinking) {
+                    messageEl.insertBefore(thinkingWrapper.firstElementChild, contentDivForThinking);
+                }
+            }
             const contentDiv = messageEl.querySelector('.message-content');
             const formattedData = this.formatMessageContent(content);
             if (formattedData.type === 'html') {
