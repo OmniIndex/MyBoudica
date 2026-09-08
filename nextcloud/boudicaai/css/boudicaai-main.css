@@ -5301,3 +5301,224 @@ body.dark-mode {
 }
 .rag-refresh-btn:hover { color: var(--text-primary); background: var(--hover-bg, rgba(0,0,0,0.06)); }
 
+/* ══════════════════════════════════════════════════════════════════════
+   Delta appended from content/interfaces/html/chat_interface/css/{chat,main}.css
+   during the newer-UI port (see templates/index.php for the corresponding
+   markup). Classes below did not previously exist in this file.
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* Transient agentic-workflow progress line ("Working out the best way to
+   approach this…", "Step 2 of 3…") shown while there's no real content yet.
+   Removed automatically once thinking or answer content starts arriving. */
+.agentic-status {
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    font-style: italic;
+    padding: 2px 0;
+    animation: agentic-status-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes agentic-status-pulse {
+    0%, 100% { opacity: 0.6; }
+    50%      { opacity: 1; }
+}
+
+/* Model's chain-of-thought, collapsed by default above the final answer */
+.thinking-block {
+    max-width: 85%;
+    margin: var(--spacing-sm) 0 0 0;
+}
+
+.thinking-summary {
+    cursor: pointer;
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
+    list-style: none;
+    user-select: none;
+    padding: 2px 0;
+}
+
+.thinking-summary::-webkit-details-marker {
+    display: none;
+}
+
+.thinking-summary::before {
+    content: "▸ ";
+    display: inline-block;
+    transition: transform var(--transition-fast, 0.15s);
+}
+
+.thinking-block[open] .thinking-summary::before {
+    transform: rotate(90deg);
+}
+
+.thinking-content {
+    margin-top: var(--spacing-xs);
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-left: 2px solid var(--border-color);
+    font-size: var(--font-size-sm);
+    line-height: 1.6;
+    color: var(--text-secondary);
+    font-style: italic;
+    white-space: pre-wrap;
+}
+
+/* While actively streaming, cap the panel's height and let it scroll rather
+   than growing unbounded and shoving the rest of the chat around as
+   reasoning arrives. Collapsed <details> (no [open]) hides content anyway,
+   so this only takes effect during live thinking. */
+.thinking-block[open] .thinking-content {
+    max-height: 220px;
+    overflow-y: auto;
+}
+
+/* Upload destination hint (uploads go into the currently-open folder) */
+.rag-upload-hint {
+    font-size: 0.72rem;
+    line-height: 1.4;
+    color: var(--text-muted, #888);
+    padding: 4px 12px;
+}
+.rag-upload-hint code {
+    font-size: 0.7rem;
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: var(--bg-secondary, rgba(127,127,127,0.15));
+    color: var(--text-primary);
+}
+.kb-overlay-panel .rag-upload-hint {
+    padding: 4px 0;
+}
+
+/* Rename button (file-tree entry row) */
+.rag-rename-btn {
+    flex-shrink: 0;
+    opacity: 0.4;
+    transition: opacity 0.15s;
+    color: var(--text-muted, #888);
+    background: none;
+    border: none;
+    padding: 2px 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+}
+.rag-entry:hover .rag-rename-btn { opacity: 1; }
+
+/* ── File Manager — header button ────────────────────────────────────────── */
+
+.btn-filemanager-header {
+    flex-shrink: 0;
+    text-decoration: none;
+}
+
+/* ── File Manager — non-modal floating window ────────────────────────────
+   Deliberately NOT built on .services-overlay (which is a modal: backdrop +
+   aria-modal + body scroll lock). This floats over the chat interface like
+   a real OS file-manager window (Dolphin/Finder) - draggable by its
+   titlebar, resizable from its corner handle, and the rest of the page
+   stays fully interactive behind/around it. Content is an iframe onto the
+   existing standalone file_manager.html page, so the file-manager logic
+   itself (file-manager.js) is untouched - this only adds window chrome. */
+
+.fm-floating-window {
+    position: fixed;
+    top: 8vh;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(920px, 92vw);
+    height: min(640px, 84vh);
+    min-width: 420px;
+    min-height: 320px;
+    display: flex;
+    flex-direction: column;
+    background: var(--background-color);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-xl);
+    overflow: hidden;
+    z-index: 500;
+}
+
+.fm-floating-titlebar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 8px 8px 14px;
+    background: var(--surface-color);
+    border-bottom: 1px solid var(--border-color);
+    cursor: move;
+    user-select: none;
+    flex-shrink: 0;
+}
+
+.fm-floating-title {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.fm-floating-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-full);
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.fm-floating-close:hover {
+    background: var(--error-color);
+    color: #fff;
+}
+
+.fm-floating-iframe {
+    flex: 1;
+    width: 100%;
+    border: none;
+    background: var(--background-color);
+}
+
+.fm-floating-resize-handle {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 18px;
+    height: 18px;
+    cursor: nwse-resize;
+}
+
+.fm-floating-resize-handle::after {
+    content: '';
+    position: absolute;
+    right: 4px;
+    bottom: 4px;
+    width: 8px;
+    height: 8px;
+    border-right: 2px solid var(--text-tertiary);
+    border-bottom: 2px solid var(--text-tertiary);
+    opacity: 0.6;
+}
+
+.fm-floating-window.fm-dragging,
+.fm-floating-window.fm-resizing {
+    user-select: none;
+}
+
+.fm-floating-window.fm-dragging .fm-floating-iframe,
+.fm-floating-window.fm-resizing .fm-floating-iframe {
+    pointer-events: none;
+}
+
+@media (max-width: 640px) {
+    .fm-floating-window {
+        top: 4vh;
+        width: 96vw;
+        height: 90vh;
+    }
+}
+

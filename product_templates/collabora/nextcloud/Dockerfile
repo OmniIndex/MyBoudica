@@ -49,3 +49,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # product's other templates.
 COPY boudica-csp.conf /etc/apache2/conf-available/boudica-csp.conf
 RUN a2enmod headers && a2enconf boudica-csp
+
+# Default "My Boudica" branding (logo/header/background/favicon + name/
+# slogan/colors), pulled from the live eu1.myboudica.com install's theming
+# app so a fresh install looks the same out of the box instead of showing
+# stock Nextcloud branding until someone re-does it by hand in the admin
+# UI. Applied by setup.sh's post-install step via apply-theming.php (the
+# text values go through the existing `occ theming:config` command
+# instead - no image-upload API for those). A deployment that wants
+# different branding can just replace these 4 files and re-run setup.sh;
+# nothing else references them by name.
+COPY theming/images/ /opt/boudica-theming/images/
+COPY theming/apply-theming.php /opt/boudica-theming/apply-theming.php

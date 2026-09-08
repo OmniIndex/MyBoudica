@@ -14,10 +14,23 @@
 
 style('boudicacode', 'style');
 
+// script()/style() (below) handle the CSP nonce automatically via
+// Nextcloud's own asset pipeline - but that does NOT cover the two inline
+// print_unescaped('<script>...') calls right below, which need their own
+// explicit nonce attribute. Without it, Nextcloud's nonce-based CSP with
+// 'strict-dynamic' on script-src-elem rejects any inline <script> outright
+// (confirmed live via a real browser CSP violation - 'unsafe-inline' alone
+// would not help either, browsers ignore it once 'strict-dynamic' is
+// present), silently leaving window.BOUDICA_API_BASE unset and the
+// localStorage pre-seed never applied. $_['cspNonce'] is injected into
+// every template's own $_ array by \OC\Template\Base::__construct() (not
+// just the page layout), so it's available here directly.
+$_cspNonceAttr = ' nonce="' . \OCP\Util::sanitizeHTML($_['cspNonce']) . '"';
+
 // Must print before boudicaAuth.js/boudicaApi.js load - both read
 // window.BOUDICA_API_BASE as their override (see the comments in those
 // files). $_['boudica_api_base'] comes from PageController::index().
-print_unescaped('<script>window.BOUDICA_API_BASE = ' . json_encode($_['boudica_api_base'], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ';</script>');
+print_unescaped('<script' . $_cspNonceAttr . '>window.BOUDICA_API_BASE = ' . json_encode($_['boudica_api_base'], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ';</script>');
 
 // Pre-seeds localStorage['boudica_session'] from the credential minted at
 // Keycloak login time (PageController::index()) so boudicaAuth.js's
@@ -27,7 +40,7 @@ print_unescaped('<script>window.BOUDICA_API_BASE = ' . json_encode($_['boudica_a
 // who hasn't logged in through "Sign in with Boudica" yet.
 if (!empty($_['boudica_provisioned_key'])) {
     print_unescaped(
-        '<script>(function(){try{if(!localStorage.getItem("boudica_session")){localStorage.setItem("boudica_session",'
+        '<script' . $_cspNonceAttr . '>(function(){try{if(!localStorage.getItem("boudica_session")){localStorage.setItem("boudica_session",'
         . json_encode(json_encode([
             'token' => $_['boudica_provisioned_key'],
             'email' => $_['boudica_provisioned_email'],

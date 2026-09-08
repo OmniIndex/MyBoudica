@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace OCA\BoudicaAi\Service;
 
 use OCP\IDBConnection;
+use OCP\IUserManager;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -34,6 +35,9 @@ class DigestService {
     public function __construct(
         private IDBConnection $db,
         private BoudicaService $boudicaService,
+        private CalendarSuggestionService $calendarSuggestionService,
+        private TranscriptEmailService $emailService,
+        private IUserManager $userManager,
         private LoggerInterface $logger,
     ) {
     }
@@ -248,6 +252,60 @@ class DigestService {
 
         $this->saveSummary($userId, $token, $summary, $newCount);
         $this->upsertState($userId, $token, ['watermark_ts' => time()]);
+
+        $this->checkForMeetingRequest($userId, $token, $room['name'] ?? $token, $summary);
+    }
+
+    /**
+     * Same detection TalkBotInvokeListener::checkForMeetingRequest() uses
+     * for the live '@boudica summarize' command, via the shared
+     * CalendarSuggestionService::detectAndStore() — passed $summary (the
+     * digest text already generated above and shown on the digest page),
+     * not the raw transcript; see CalendarSuggestionService's class
+     * docblock for why. The difference from the interactive path is purely
+     * how the resulting confirmation prompt reaches the user: this job has
+     * no live BotInvokeEvent to reply on (it runs on a schedule, not in
+     * response to a chat message), so it emails the prompt instead of
+     * posting into Talk. The recipient still confirms the same way —
+     * '@boudica yes' in the Talk room — which TalkBotInvokeListener picks
+     * up regardless of which of these two paths created the pending row.
+     *
+     * NOTE: if a room has multiple members, whichever of their per-user
+     * digest polls happens to run first is the one that creates the
+     * suggestion and gets emailed — detectAndStore() is keyed by
+     * conversation token, not by user, so it won't create a second one
+     * for the next member's poll. Acceptable for now, but means "who gets
+     * asked" in a multi-user room is whoever's poll cycle got there
+     * first, not necessarily whichever of them is the "right" organizer.
+     */
+    private function checkForMeetingRequest(string $userId, string $token, string $roomName, string $summary): void {
+        try {
+            $suggestion = $this->calendarSuggestionService->detectAndStore($token, $summary);
+        } catch (\Throwable $e) {
+            $this->logger->info("Boudica digest: meeting detection failed for room {$token}: " . $e->getMessage());
+            return;
+        }
+
+        if ($suggestion === null) {
+            return;
+        }
+
+        $user = $this->userManager->get($userId);
+        $email = $user?->getEMailAddress();
+        if (!$email) {
+            $this->logger->info("Boudica digest: found a meeting request in {$token} but user {$userId} has no email to prompt them at");
+            return;
+        }
+
+        $this->emailService->sendMeetingSuggestionPrompt(
+            $email,
+            $user->getDisplayName(),
+            $roomName,
+            $suggestion['title'],
+            (int)$suggestion['start_ts'],
+            (string)($suggestion['source_quote'] ?? ''),
+            $suggestion['proposed_by']
+        );
     }
 
     public function pollUser(string $userId): void {

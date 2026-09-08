@@ -11,7 +11,7 @@ class ChatAPI {
         // SAML authentication is handled separately by Flask on port 5000
         // All chat messages go directly to Apache CGI at /api/boudica
         const defaultConfig = {
-            apiBase: 'https://boudi.ca/api/boudica',  // Apache  endpoint
+            apiBase: '/api/boudica',  // Apache  endpoint
             useCGI: true,              // Always use direct CGI
             mode: 'cgi'                // CGI mode (not SAML proxy)
         };
@@ -35,6 +35,28 @@ class ChatAPI {
         // A new isolated session is only started when the user was previously
         // in normal (non-isolated) mode — i.e. they explicitly want a clean slate.
         this._sharedIsolatedSessions = new Map();
+    }
+
+    // Returns { Authorization: 'Bearer <token>' } when a real Keycloak
+    // access token is available (this.auth.accessToken, set by
+    // saml-auth.js after login), or {} otherwise - e.g. the sovereign
+    // single-tenant build (local-auth.js) has no such token, in which case
+    // requests fall back to whatever identity the backend can still
+    // resolve (see authenticate_request() in src/slm_cgi_utils.cpp).
+    // Read live off this.auth on every call, not cached, since saml-auth.js
+    // refreshes accessToken in place as the session continues.
+    //
+    // Added 2026-08-27: previously every call below authenticated with
+    // nothing but a plain user_id field in the request body/query - a value
+    // any client could set to any email with zero verification. This header
+    // gives the backend something it can actually verify (see
+    // verify_keycloak_token() / authenticate_request()'s new first layer).
+    // The body user_id is still sent alongside it for now (removing that
+    // fallback entirely is a later, separate step), so this is additive,
+    // not yet a hard requirement.
+    _authHeaders() {
+        const token = this.auth && this.auth.accessToken;
+        return token ? { 'Authorization': 'Bearer ' + token } : {};
     }
 
     shouldIsolateSession(messageText, useRagEnabled) {
@@ -148,9 +170,8 @@ class ChatAPI {
      */
     async sendMessageCGI(chatId, message, onStream = null, files = null, options = null) {
         // Get user session data for audit logging
-        let userId = '';
+        let userId = 'anonymous';
         let userEmail = '';
-        let apiKey = '';
         try {
             const sessionData = localStorage.getItem('boudica_session');
             if (sessionData) {
@@ -158,7 +179,6 @@ class ChatAPI {
                 // Use email or username for audit logging, NOT UUID
                 userId = session.user?.email || session.user?.username || session.user?.id || 'anonymous';
                 userEmail = session.user?.email || '';
-                apiKey = session.token || '';
             }
         } catch (e) {
             console.warn('Failed to get session data:', e);
@@ -187,9 +207,9 @@ class ChatAPI {
             formData.append('user_id', userId);
             formData.append('user_email', userEmail);
             formData.append('stream', onStream ? 'true' : 'false');
-            formData.append('api_key', apiKey);
+            formData.append('api_key', (this.auth && this.auth.accessToken) || '');
             formData.append('temperature', localStorage.getItem('boudica_temperature') || '0.8');
-            formData.append('max_tokens', localStorage.getItem('boudica_max_tokens') || '45000');
+            formData.append('max_tokens', localStorage.getItem('boudica_max_tokens') || '35000');
             formData.append('use_rag', localStorage.getItem('boudica_use_rag') || 'true');
 
             files.forEach((fileItem, index) => {
@@ -206,6 +226,7 @@ class ChatAPI {
 
             const response = await fetch(url, {
                 method: 'POST',
+                headers: this._authHeaders(),
                 body: formData // browser sets Content-Type with boundary
             });
 
@@ -313,6 +334,7 @@ class ChatAPI {
             return {
                 role: 'assistant',
                 content: this.stripChannelThought(data.response || data.text || ''),
+                thinking: data.thinking || null,
                 metadata: {
                     tokens: data.tokens_generated || 0,
                     time: data.processing_time_ms ? data.processing_time_ms / 1000 : 0,
@@ -328,7 +350,7 @@ class ChatAPI {
             user_id: userId,
             user_email: userEmail,
             stream: onStream ? true : false,
-            api_key: apiKey || localStorage.getItem('boudica_api_key') || '',
+            api_key: (this.auth && this.auth.accessToken) || '',
             temperature: parseFloat(localStorage.getItem('boudica_temperature') || '0.8'),
             max_tokens: parseInt(localStorage.getItem('boudica_max_tokens') || '35000'),
             use_rag: useRagEnabled,
@@ -352,7 +374,8 @@ class ChatAPI {
         const response = await fetch(url, {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                ...this._authHeaders()
             },
             body: JSON.stringify(requestBody)
         });
@@ -584,14 +607,16 @@ class ChatAPI {
         const fetchOptions = {
             method: 'POST'
         };
-        
+
         if (isMultipart) {
             // FormData - browser sets Content-Type with boundary
+            fetchOptions.headers = this._authHeaders();
             fetchOptions.body = requestBody;
         } else {
             // JSON
             fetchOptions.headers = {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                ...this._authHeaders()
             };
             fetchOptions.body = JSON.stringify(requestBody);
         }
@@ -609,7 +634,10 @@ class ChatAPI {
         let fullContent = '';
         let tokensGenerated = 0;
         let lastChunk = null;  // Track last chunk for audit_id
-        
+        let thinking = null;   // Model's own chain-of-thought, from the final chunk's "thinking" field
+        let thinkingLive = ''; // Reasoning text accumulated live from thinking_token chunks
+        let thinkingActive = false; // True between thinking_start and thinking_end
+
         try {
             while (true) {
                 const { done, value } = await reader.read();
@@ -635,9 +663,35 @@ class ChatAPI {
                         }
                         
                         if (chunk.type === 'start') {
+                            // Fires the instant the server has received and accepted the
+                            // request - well before it can know whether this will be a
+                            // plain answer, a <think>-mode response, or an agentic
+                            // multi-step workflow, and (confirmed live 2026-09-01 against
+                            // the 235B-Thinking model) can itself arrive 2+ seconds after
+                            // the request is sent, with another 2+ seconds before the
+                            // first real thinking/status event on top of that - a "start"
+                            // that does nothing left the UI completely silent for the
+                            // whole stretch. Reuses the exact same "first chunk creates
+                            // the bubble" path status/thinking_start already trigger
+                            // (app.js's onStream callback) with a generic default message,
+                            // so this is genuinely the earliest possible feedback rather
+                            // than a second, parallel mechanism - whatever real event
+                            // comes next (status/thinking_start/token) updates or clears
+                            // this same message normally.
+                            onStream(this.stripChannelThought(fullContent), false, null, null, null, 'Got it — working on a response…');
                             continue;
                         }
-                        
+
+                        // Agentic workflow progress narration (planning, step N,
+                        // synthesising) — fills the otherwise-silent stretch before
+                        // real thinking/answer tokens start arriving on a long
+                        // multi-task prompt. Purely informational; each one replaces
+                        // the last, and the UI clears it once real content shows up.
+                        if (chunk.type === 'status') {
+                            onStream(this.stripChannelThought(fullContent), false, null, null, null, chunk.message);
+                            continue;
+                        }
+
                         if (chunk.type === 'token') {
                             const token = chunk.token;
 
@@ -648,7 +702,34 @@ class ChatAPI {
                             // Call streaming callback with partial content
                             onStream(this.stripChannelThought(fullContent), false, null);
                         }
-                        
+
+                        // Live reasoning stream — kept entirely separate from fullContent
+                        // (the visible answer) so the model's chain-of-thought never mixes
+                        // into the main response; the UI renders it in its own collapsible
+                        // panel, expanded while active and auto-collapsed on thinking_end.
+                        if (chunk.type === 'thinking_start') {
+                            thinkingActive = true;
+                            thinkingLive = '';
+                            onStream(this.stripChannelThought(fullContent), false, null, null,
+                                     { active: true, text: thinkingLive });
+                            continue;
+                        }
+
+                        if (chunk.type === 'thinking_token') {
+                            thinkingLive += chunk.token;
+                            onStream(this.stripChannelThought(fullContent), false, null, null,
+                                     { active: true, text: thinkingLive });
+                            continue;
+                        }
+
+                        if (chunk.type === 'thinking_end') {
+                            thinkingActive = false;
+                            if (thinkingLive) thinking = thinkingLive;
+                            onStream(this.stripChannelThought(fullContent), false, null, null,
+                                     { active: false, text: thinkingLive });
+                            continue;
+                        }
+
                         // Final response (no type field)
                         if (chunk.response !== undefined) {
                             // PDF generation: trigger browser download instead of showing text
@@ -709,8 +790,9 @@ class ChatAPI {
                                 fullContent = chunk.response;
                             }
                             tokensGenerated = chunk.tokens_generated || tokensGenerated;
+                            if (chunk.thinking) thinking = chunk.thinking;
                             // Signal completion with audit_id
-                            onStream(this.stripChannelThought(fullContent), true, chunk.audit_id || null);
+                            onStream(this.stripChannelThought(fullContent), true, chunk.audit_id || null, thinking);
                         }
                     } catch (e) {
                         // Re-throw all API errors (content safety, domain validation, etc.)
@@ -790,6 +872,7 @@ class ChatAPI {
                             fullContent = chunk.response;
                         }
                         tokensGenerated = chunk.tokens_generated || tokensGenerated;
+                        if (chunk.thinking) thinking = chunk.thinking;
                     }
                 } catch (e) {
                     // Re-throw all API errors (content safety, domain validation, etc.)
@@ -800,11 +883,12 @@ class ChatAPI {
                     console.warn('Failed to parse final chunk:', buffer, e);
                 }
             }
-            
+
             return {
                 role: 'assistant',
                 content: this.stripChannelThought(fullContent),
                 audit_id: lastChunk?.audit_id || null,  // Capture audit_id from backend
+                thinking: thinking,
                 metadata: {
                     tokens: tokensGenerated,
                     model: 'Boudica'
@@ -996,11 +1080,12 @@ class ChatAPI {
         try {
             if (this.useCGI) {
                 const params = new URLSearchParams({
-                    api_key: localStorage.getItem('boudica_api_key') || ''
+                    api_key: (this.auth && this.auth.accessToken) || ''
                 });
-                
+
                 const response = await fetch(`${this.apiBase}/suggestions?${params.toString()}`, {
-                    method: 'GET'
+                    method: 'GET',
+                    headers: this._authHeaders()
                 });
                 
                 if (!response.ok) {
@@ -1057,6 +1142,31 @@ class ChatAPI {
     }
 
     /**
+     * Fetch the current scheduled-maintenance status, if any. CGI mode only
+     * (mirrors src/slm_cgi_handlers.cpp's public, unauthenticated
+     * /maintenance_status endpoint) - returns null in SAML-backend mode or
+     * on any error, since this is a best-effort, non-critical notice and
+     * should never block login. See admin_api_full.cpp's
+     * handle_maintenance_schedule() for the admin-portal side that sets this.
+     */
+    async getMaintenanceStatus() {
+        if (!this.useCGI) {
+            return null;
+        }
+        try {
+            const response = await fetch(`${this.apiBase}/maintenance_status`, {
+                method: 'GET'
+            });
+            if (!response.ok) return null;
+            const data = await response.json();
+            return (data && data.pending) ? data : null;
+        } catch (error) {
+            console.error('Error checking maintenance status:', error);
+            return null;
+        }
+    }
+
+    /**
      * Health check
      */
     async healthCheck() {
@@ -1093,6 +1203,7 @@ class ChatAPI {
 
         const response = await fetch(`${this.apiBase}/user_settings`, {
             method: 'POST',
+            headers: this._authHeaders(),
             body: formData
         });
 
@@ -1124,7 +1235,8 @@ class ChatAPI {
         });
 
         const response = await fetch(`${this.apiBase}/user_settings?${query.toString()}`, {
-            method: 'GET'
+            method: 'GET',
+            headers: this._authHeaders()
         });
 
         if (!response.ok) {
@@ -1153,7 +1265,7 @@ class ChatAPI {
             ? `${this.apiBase}/users?domain=${encodeURIComponent(domain)}`
             : `${this.apiBase}/users`;
 
-        const response = await fetch(url, { method: 'GET' });
+        const response = await fetch(url, { method: 'GET', headers: this._authHeaders() });
         if (!response.ok) {
             throw new Error('Failed to load users list');
         }
@@ -1176,7 +1288,7 @@ class ChatAPI {
 
         const response = await fetch(`${this.apiBase}/messages`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...this._authHeaders() },
             body: payload
         });
 
@@ -1195,7 +1307,8 @@ class ChatAPI {
     async loadUserMessages(userId, box = 'inbox') {
         const query = new URLSearchParams({ user_id: userId, box });
         const response = await fetch(`${this.apiBase}/messages?${query.toString()}`, {
-            method: 'GET'
+            method: 'GET',
+            headers: this._authHeaders()
         });
 
         if (!response.ok) {
@@ -1214,7 +1327,7 @@ class ChatAPI {
         const payload = JSON.stringify({ action, message_id: Number(messageId), user_id: userId });
         const response = await fetch(`${this.apiBase}/messages`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...this._authHeaders() },
             body: payload
         });
 
@@ -1233,7 +1346,9 @@ class ChatAPI {
     // ── Shared Chats ─────────────────────────────────────────────────────────
 
     async loadSharedChats(userId) {
-        const response = await fetch(`${this.apiBase}/shared_chats?user_id=${encodeURIComponent(userId)}`);
+        const response = await fetch(`${this.apiBase}/shared_chats?user_id=${encodeURIComponent(userId)}`, {
+            headers: this._authHeaders()
+        });
         if (!response.ok) throw new Error('loadSharedChats failed: ' + response.status);
         const data = await response.json();
         if (!data.success) throw new Error(data.error || 'Failed to load shared chats');
@@ -1242,7 +1357,7 @@ class ChatAPI {
 
     async loadSharedChatMessages(chatId, userId, sinceId = 0) {
         const url = `${this.apiBase}/shared_chats?chat_id=${encodeURIComponent(chatId)}&user_id=${encodeURIComponent(userId)}&since_id=${sinceId}`;
-        const response = await fetch(url);
+        const response = await fetch(url, { headers: this._authHeaders() });
         if (!response.ok) throw new Error('loadSharedChatMessages failed: ' + response.status);
         const data = await response.json();
         if (!data.success) throw new Error(data.error || 'Failed to load messages');
@@ -1253,7 +1368,7 @@ class ChatAPI {
         const payload = JSON.stringify({ action: 'create', owner_id: ownerUserId, title, participants });
         const response = await fetch(`${this.apiBase}/shared_chats`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...this._authHeaders() },
             body: payload
         });
         if (!response.ok) throw new Error('createSharedChat failed: ' + response.status);
@@ -1266,7 +1381,7 @@ class ChatAPI {
         const payload = JSON.stringify({ action: 'invite', chat_id: Number(chatId), user_id: ownerUserId, invitee: inviteeUserId });
         const response = await fetch(`${this.apiBase}/shared_chats`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...this._authHeaders() },
             body: payload
         });
         if (!response.ok) throw new Error('inviteToSharedChat failed: ' + response.status);
@@ -1279,7 +1394,7 @@ class ChatAPI {
         const payload = JSON.stringify({ action: 'group_message', chat_id: Number(chatId), author_id: authorId, content });
         const response = await fetch(`${this.apiBase}/shared_chats`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...this._authHeaders() },
             body: payload
         });
         if (!response.ok) throw new Error('sendSharedGroupMessage failed: ' + response.status);
@@ -1292,7 +1407,7 @@ class ChatAPI {
         const payload = JSON.stringify({ action: 'delete', chat_id: Number(chatId), user_id: userId });
         const response = await fetch(`${this.apiBase}/shared_chats`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...this._authHeaders() },
             body: payload
         });
         if (!response.ok) throw new Error('deleteSharedChat failed: ' + response.status);
@@ -1331,7 +1446,7 @@ class ChatAPI {
         });
         const response = await fetch(`${this.apiBase}/shared_chats`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...this._authHeaders() },
             body: payload
         });
         if (!response.ok) throw new Error('sendSharedChatMessage failed: ' + response.status);

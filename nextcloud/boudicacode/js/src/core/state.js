@@ -22,12 +22,41 @@
         activeTab: 'home', // 'home' | filePath
     };
 
+    /** Paths of currently-open files with unsaved changes, most-recently-opened order preserved. */
+    function dirtyPaths() {
+        return Array.from(state.openFiles.entries())
+            .filter(([, entry]) => entry.isDirty)
+            .map(([path]) => path);
+    }
+
     BoudicaCode.AppState = {
         getProjectRoot() {
             return state.projectRoot;
         },
 
+        /**
+         * Switches the active project root. Returns true if the switch
+         * happened, false if it was declined (see below) — callers that
+         * chain further UI updates (e.g. projectSwitcher.js closing its
+         * dropdown) should check this rather than assuming success.
+         *
+         * If any open file has unsaved changes, this used to discard them
+         * with zero warning (state.openFiles.clear() below ran
+         * unconditionally) — switching projects, or even just picking
+         * "Home" from the project bar, silently threw away in-progress
+         * edits. Now it confirms first, same pattern as fileTree.js's own
+         * delete confirmation, and aborts the switch entirely if declined.
+         */
         setProjectRoot(path) {
+            const dirty = dirtyPaths();
+            if (dirty.length > 0) {
+                const shown = dirty.slice(0, 5).join(', ') + (dirty.length > 5 ? `, and ${dirty.length - 5} more` : '');
+                const proceed = global.confirm(
+                    `You have unsaved changes in: ${shown}.\n\nSwitching projects will discard them. Continue?`
+                );
+                if (!proceed) return false;
+            }
+
             state.projectRoot = path;
             state.openFiles.clear();
             state.activeTab = 'home';
@@ -42,6 +71,7 @@
                 // non-fatal, just means reloads won't remember the project.
             }
             bus.emit(EVENTS.PROJECT_SELECTED, { projectRoot: path });
+            return true;
         },
 
         getActiveTab() {
@@ -92,6 +122,61 @@
             } else {
                 bus.emit(EVENTS.FILE_CLOSED, { path });
             }
+        },
+
+        /**
+         * Called after a successful WebDAV rename/move (see fileTree.js's
+         * "Rename" context-menu item) so any open tab under the moved path
+         * follows along instead of being left pointing at a path that no
+         * longer exists on disk. Handles both a single renamed FILE (exact
+         * path match) and a renamed FOLDER — every open path nested under
+         * it gets re-prefixed, e.g. renaming "src" to "lib" also moves an
+         * open "src/main.py" tab to "lib/main.py".
+         * @returns {boolean} whether any open tab was actually affected
+         */
+        renameOpenFile(oldPath, newPath) {
+            const renames = [];
+            for (const path of state.openFiles.keys()) {
+                if (path === oldPath) {
+                    renames.push([path, newPath]);
+                } else if (path.startsWith(`${oldPath}/`)) {
+                    renames.push([path, newPath + path.slice(oldPath.length)]);
+                }
+            }
+            if (renames.length === 0) return false;
+
+            for (const [from, to] of renames) {
+                const entry = state.openFiles.get(from);
+                state.openFiles.delete(from);
+                state.openFiles.set(to, entry);
+                if (state.activeTab === from) {
+                    state.activeTab = to;
+                }
+            }
+            bus.emit(EVENTS.FILE_RENAMED, { renames });
+            return true;
+        },
+
+        /**
+         * Called after a project FOLDER itself was renamed (see
+         * projectSwitcher.js) — distinct from setProjectRoot(), which
+         * means "switch to a different project" and discards open tabs
+         * (with a confirm if any are dirty). A rename doesn't invalidate
+         * anything: every open tab's path is already relative to the
+         * project root, so only the root string itself (and anything
+         * keyed off it, like WebDavClient's prefix — see main.js's
+         * PROJECT_SELECTED listener) needs to move. No-op if the renamed
+         * project isn't the currently active one.
+         */
+        renameProjectRoot(oldPath, newPath) {
+            if (state.projectRoot !== oldPath) return;
+            state.projectRoot = newPath;
+            try {
+                localStorage.setItem('bc_last_project_root', newPath);
+            } catch (err) {
+                // non-fatal, see setProjectRoot's identical catch
+            }
+            bus.emit(EVENTS.PROJECT_SELECTED, { projectRoot: newPath });
         },
 
         updateFileContent(path, content) {

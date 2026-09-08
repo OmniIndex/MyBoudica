@@ -204,27 +204,62 @@ enable it from the Nextcloud admin apps page, then visit it from the
 app launcher. Until the build pipeline (#2) exists, `js/src/main.js`
 and friends won't load as-is — add bundling before testing in-browser.
 
-## Compile/syntax check
+## Compile/build check (0.5.0): syntax check for some stacks, a real build for others
 
 The editor's "▶ Check" button (next to the tabs) sends the current
 buffer's content to `CompileController::check()`, which writes it to a
 private temp dir and runs the relevant toolchain already installed on
-this container (confirmed: `build-essential` — gcc/g++; also wired for
-Python via `py_compile` and Java via `javac`, both of which fail
-gracefully with a clear message if not installed). Every run goes
-through `timeout` and PHP's array-form `proc_open` (no shell
-interpolation, so file content can't inject commands). This is a
-**syntax/type check only** — `-fsyntax-only` for C/C++, `py_compile`
-for Python — nothing is ever linked or executed. Results show up as a
-message in the chat panel. Extending to more languages just means
-adding an entry to the `$map` in `resolveCommand()`.
+this container. Every run goes through `timeout` and PHP's array-form
+`proc_open` (no shell interpolation, so file content/filenames can't
+inject commands). Coverage per extension, via `resolveCommand()`'s
+`$entries` map:
 
-Deliberately **not** a "Build and run" feature — full execution was
-ruled out as not worth it for a remote-hosted editor (see conversation
-history). If that changes later, treat it as a substantially bigger
-feature: needs actual sandboxing (resource limits beyond a timeout,
-network isolation, filesystem isolation) since it'd mean running
-arbitrary user code rather than just parsing it.
+| Extension(s) | What runs | Kind |
+|---|---|---|
+| `.py` | `py_compile` | syntax check (bytecode produced, not run) |
+| `.c` `.cpp` `.cc` `.cxx` | `gcc`/`g++ -c` | **real build** — compiles to a `.o` object file, not linked |
+| `.h` `.hpp` | `g++ -fsyntax-only` | syntax/type check (headers aren't a translation unit on their own, so building one to an object file doesn't mean much) |
+| `.java` | `javac -d` | **real build** — compiles to `.class` bytecode (this was already true before this table existed) |
+| `.ts` `.tsx` | `tsc` | **real build** — type-checks and transpiles to `.js` |
+| `.js` | `node --check` | syntax check (`.jsx` deliberately excluded — plain `node` doesn't understand JSX, so valid JSX would read as a syntax error) |
+| `.sh` | `bash -n` | syntax check |
+| `.bat`/`.cmd` | — | not supported — no safe syntax-only checker for Windows batch exists on this (Linux) container |
+
+All of these fail gracefully with a clear message if the underlying
+toolchain isn't installed. Results show up as a message in the chat
+panel. Extending to more languages/extensions just means adding an
+entry to `resolveCommand()`'s `$entries` map.
+
+**Where "real build" stops, deliberately.** C/C++ uses `-c` (compile to
+an object file) rather than a full link to a final executable — linking
+a single file would spuriously fail with "undefined reference to main"
+for any `.cpp` that isn't the one containing `main()`, which is the
+normal case for most files in a multi-file project (see the scaffolded
+`CMakeLists.txt`'s `file(GLOB SOURCES "src/*.cpp" "*.cpp")`). `-c`
+mirrors how a real build system actually works — compile each
+translation unit separately, link at the very end — so checking one
+file in isolation stays meaningful. No language here ever produces a
+final linked/runnable artifact, and nothing this controller produces
+(a `.o`, a `.class`, transpiled `.js`) is ever executed by it.
+
+**Still deliberately not a "Build (with dependencies) and Run/Test"
+feature** — and this is a real, load-bearing distinction, not just
+stricter wording of the old one. Compile and the "real build" tier
+above never execute anything, by construction. Installing dependencies
+(`npm install`, `pip install -r requirements.txt`, `mvn compile`
+resolving Maven plugins) and running a test suite are a different risk
+tier entirely: both mean executing arbitrary code — dependency
+installers can run third-party `postinstall`/`setup.py`/build-plugin
+code sourced from the internet, and a test runner by definition imports
+and calls the code under test. The `proc_open`+`timeout` model in this
+controller was never designed to contain that safely (no network
+isolation, no filesystem isolation beyond one temp dir, no resource
+ceiling beyond a wall-clock timeout). That's planned as a genuinely
+separate, fully sandboxed service — its own container with the full
+toolchain, gVisor/Firecracker-grade isolation, an allowlisted-proxy-only
+network path for dependency fetches, ephemeral per-job execution — not
+something to bolt onto `CompileController`. Deferred, not rejected;
+revisit as its own scoped piece of work when there's real demand for it.
 
 ## AI agent: project creation & editing
 

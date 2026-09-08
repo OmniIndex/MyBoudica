@@ -9,6 +9,7 @@ use OCA\BoudicaAi\Service\BoudicaService;
 use OCA\BoudicaAi\Service\TranscriptionService;
 use OCA\BoudicaAi\Service\CallParticipantService;
 use OCA\BoudicaAi\Service\TranscriptEmailService;
+use OCA\BoudicaAi\Service\CalendarSuggestionService;
 use OCP\EventDispatcher\Event;
 use OCP\EventDispatcher\IEventListener;
 use OCP\IDBConnection;
@@ -22,6 +23,7 @@ class TalkBotInvokeListener implements IEventListener {
     private TranscriptionService $transcriptionService;
     private CallParticipantService $participantService;
     private TranscriptEmailService $emailService;
+    private CalendarSuggestionService $calendarSuggestionService;
     private LoggerInterface $logger;
     private IDBConnection $db;
     private IUserManager $userManager;
@@ -31,6 +33,7 @@ class TalkBotInvokeListener implements IEventListener {
         TranscriptionService $transcriptionService,
         CallParticipantService $participantService,
         TranscriptEmailService $emailService,
+        CalendarSuggestionService $calendarSuggestionService,
         LoggerInterface $logger,
         IDBConnection $db,
         IUserManager $userManager
@@ -39,6 +42,7 @@ class TalkBotInvokeListener implements IEventListener {
         $this->transcriptionService = $transcriptionService;
         $this->participantService = $participantService;
         $this->emailService = $emailService;
+        $this->calendarSuggestionService = $calendarSuggestionService;
         $this->logger = $logger;
         $this->db = $db;
         $this->userManager = $userManager;
@@ -118,12 +122,17 @@ class TalkBotInvokeListener implements IEventListener {
             return; // system messages (including edits/deletes) never trigger @boudica logic
         }
 
-        if (!str_contains(strtolower($plainText), 'boudica')) {
+        // Only an actual @boudica mention triggers the bot — not any message
+        // that merely happens to contain the word "boudica" (e.g. "The
+        // Boudica AI app is fantastic", "Boudica Code works", "myboudica.com
+        // is the site we need"). \b after "boudica" also excludes near-miss
+        // mentions like "@boudicacode"/"@boudicaai" that aren't this bot.
+        if (!preg_match('/@boudica\b/i', $plainText)) {
             return;
         }
 
         $sessionId = $token;
-        $prompt = trim(preg_replace('/@?boudica/i', '', $plainText));
+        $prompt = trim(preg_replace('/@boudica\b/i', '', $plainText));
 
         if ($prompt === '') {
             $event->addAnswer("Hi {$senderName}, what would you like me to help with?");
@@ -149,6 +158,23 @@ class TalkBotInvokeListener implements IEventListener {
         if (preg_match('/^\s*tracking\s+(status|info|details)\s*$/i', $prompt)) {
             $this->handleTrackingStatus($event, $token, $senderName);
             return;
+        }
+
+        // Checked before every other keyword match (esp. the calendar-search
+        // one just below) so a reply like "yes, add to my calendar" resolves
+        // the pending confirmation instead of triggering a calendar search.
+        // Only intercepts when there's actually something pending, so a bare
+        // "yes"/"no" elsewhere in normal conversation is unaffected.
+        $pendingSuggestion = $this->calendarSuggestionService->getPendingSuggestion($token);
+        if ($pendingSuggestion !== null) {
+            if (preg_match('/^\s*(yes|yep|yeah|sure|confirm|add(\s+it)?)\b/i', $prompt)) {
+                $this->handleMeetingConfirm($event, $token, $pendingSuggestion, $senderName);
+                return;
+            }
+            if (preg_match('/^\s*(no|nope|skip|dismiss|cancel)\b/i', $prompt)) {
+                $this->handleMeetingDismiss($event, $pendingSuggestion);
+                return;
+            }
         }
 
         if (preg_match('/^\s*summarize\s+call/i', $prompt) || preg_match('/^\s*call\s+summary/i', $prompt)) {
@@ -299,6 +325,8 @@ class TalkBotInvokeListener implements IEventListener {
         }
 
         $event->addAnswer($summary);
+
+        $this->checkForMeetingRequest($event, $summary, $token);
     }
 
     private function parsePeriodToTimestamp(string $prompt): int {
@@ -953,6 +981,8 @@ class TalkBotInvokeListener implements IEventListener {
 
             $event->addAnswer("**Call Summary** (from " . $callStartTime . ")\n\n" . $summary);
 
+            $this->checkForMeetingRequest($event, $summary, $token);
+
             // Optionally link this call to an active tracking session
             $trackingSessionId = $this->getActiveTrackingSession($token);
             if ($trackingSessionId !== null) {
@@ -966,6 +996,109 @@ class TalkBotInvokeListener implements IEventListener {
             $this->logger->warning('Boudica call summary failed: ' . $e->getMessage());
             $event->addAnswer("Sorry, I couldn't retrieve the call transcript.");
         }
+    }
+
+    /**
+     * Looks for explicit meeting requests in a just-generated summary and,
+     * if found, stores one as a pending suggestion and asks the room to
+     * confirm. No-ops (silently) if a suggestion is already pending for
+     * this conversation — never stacks a second one on top. Detection +
+     * storage is shared with DigestService (the background digest job hits
+     * the same extraction/storage via CalendarSuggestionService::detectAndStore()
+     * — this method's own job is just turning the result into a chat reply).
+     * $summary must be Boudica's already-generated summary text, not the
+     * raw transcript — see CalendarSuggestionService's class docblock for
+     * why.
+     */
+    private function checkForMeetingRequest(Event $event, string $summary, string $token): void {
+        try {
+            $suggestion = $this->calendarSuggestionService->detectAndStore($token, $summary);
+        } catch (\Throwable $e) {
+            $this->logger->info('Meeting request detection failed: ' . $e->getMessage());
+            return;
+        }
+
+        if ($suggestion === null) {
+            return;
+        }
+
+        $startTs = (int)$suggestion['start_ts'];
+        $when = date('l, F j, Y', $startTs)
+            . ($suggestion['had_explicit_time'] ? ' at ' . date('g:i A', $startTs) : ' (no time given — defaulted to 9:00 AM)');
+        $askerLabel = $suggestion['proposed_by'] ?: 'Someone';
+
+        $event->addAnswer(
+            "📅 I noticed a meeting request — {$askerLabel} asked for **{$suggestion['title']}** on {$when}.\n"
+            . "> {$suggestion['source_quote']}\n\n"
+            . "Reply '@boudica yes' to add it to your calendar and notify the other participants in this "
+            . "conversation, or '@boudica no' to skip."
+        );
+    }
+
+    /**
+     * Confirms the pending suggestion: writes the event to the confirming
+     * user's own calendar (never someone else's), lists every other
+     * Nextcloud-user participant of this Talk room as an attendee on it,
+     * and sends those attendees a heads-up email (not a real calendar
+     * invite — see CalendarSuggestionService's docblock).
+     */
+    private function handleMeetingConfirm(Event $event, string $token, array $suggestion, string $senderName): void {
+        $userId = $this->getCurrentUserId();
+        if ($userId === 'unknown') {
+            $event->addAnswer("I can't tell who you are in Nextcloud, so I can't add this to a calendar. Sorry!");
+            $this->calendarSuggestionService->resolveSuggestion((int)$suggestion['id'], 'dismissed', null);
+            return;
+        }
+
+        $attendees = $this->calendarSuggestionService->getOtherRoomParticipants($token, $userId);
+
+        $created = $this->calendarSuggestionService->createEvent(
+            $userId,
+            $suggestion['title'],
+            (int)$suggestion['start_ts'],
+            (int)$suggestion['end_ts'],
+            (string)($suggestion['description'] ?? ''),
+            $attendees
+        );
+
+        if (!$created) {
+            $event->addAnswer("Sorry, I couldn't add that to your calendar — you may not have a writable calendar available.");
+            $this->calendarSuggestionService->resolveSuggestion((int)$suggestion['id'], 'dismissed', $userId);
+            return;
+        }
+
+        $this->calendarSuggestionService->resolveSuggestion((int)$suggestion['id'], 'confirmed', $userId);
+
+        $reply = "✓ Added **{$suggestion['title']}** to your calendar.";
+
+        $emailAttendees = [];
+        foreach ($attendees as $attendee) {
+            if ($attendee['email']) {
+                $emailAttendees[$attendee['email']] = $attendee['displayName'];
+            }
+        }
+
+        if (!empty($emailAttendees)) {
+            $organizer = $this->userManager->get($userId);
+            $organizerName = $organizer?->getDisplayName() ?: $senderName;
+            $notified = $this->emailService->sendMeetingInviteNotification(
+                $emailAttendees,
+                $organizerName,
+                $suggestion['title'],
+                (int)$suggestion['start_ts'],
+                'this conversation'
+            );
+            if ($notified) {
+                $reply .= " Notified " . count($emailAttendees) . " other participant(s) by email.";
+            }
+        }
+
+        $event->addAnswer($reply);
+    }
+
+    private function handleMeetingDismiss(Event $event, array $suggestion): void {
+        $this->calendarSuggestionService->resolveSuggestion((int)$suggestion['id'], 'dismissed', $this->getCurrentUserId());
+        $event->addAnswer("Okay, I won't add that to a calendar.");
     }
 
     /**

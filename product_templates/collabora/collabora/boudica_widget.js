@@ -1700,7 +1700,10 @@
         const baseUrl = (config.apiEndpoint || '/api/boudica').replace(/\/$/, '');
         let url = baseUrl + '/chat';
         if ( !apiKey ) {
-            apiKey = getApiKey();
+            // getApiKey() sets the outer apiKey/userId as a side effect and
+            // always returns undefined - assigning its return value here
+            // would immediately clobber whatever it just set.
+            getApiKey();
         }
         
         const controller = new AbortController();
@@ -1731,9 +1734,19 @@
                 formData.append('document_count', files.length.toString());
                 
                 console.log(`Calling API with ${files.length} file(s) via multipart`);
-                
+
                 response = await fetch(url, {
                     method: 'POST',
+                    // The server can't safely scan a multipart body for
+                    // api_key the way it does for JSON (a naive scan there
+                    // previously corrupted it on Content-Disposition
+                    // headers), so it doesn't try - it relies on this
+                    // Authorization header instead, same as every other
+                    // working caller (see chat-api.js's _authHeaders()).
+                    // Without it, every file-attach request was rejected as
+                    // unauthenticated even with a valid api_key in the form
+                    // data. Confirmed live 2026-09-05.
+                    headers: apiKey ? { 'Authorization': 'Bearer ' + apiKey } : {},
                     body: formData,
                     signal: controller.signal
                 });

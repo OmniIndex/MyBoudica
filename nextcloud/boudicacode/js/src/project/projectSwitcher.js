@@ -139,9 +139,16 @@
             }
             homeItem.innerHTML = `<span class="bc-projectbar__item-name">🏠 Home (no project)</span>`;
             const selectHome = () => {
-                this._toggle(false);
-                if (AppState.getProjectRoot()) {
-                    AppState.setProjectRoot('');
+                // AppState.setProjectRoot() confirms first if there are
+                // unsaved changes and returns false if declined — leave the
+                // dropdown open in that case rather than closing it on a
+                // switch that didn't actually happen.
+                if (!AppState.getProjectRoot()) {
+                    this._toggle(false);
+                    return;
+                }
+                if (AppState.setProjectRoot('')) {
+                    this._toggle(false);
                 }
             };
             homeItem.addEventListener('click', selectHome);
@@ -173,12 +180,20 @@
                     li.classList.add('is-current');
                 }
                 li.innerHTML = `<span class="bc-projectbar__item-name">${escapeHtml(project.name)}</span>` +
-                    `<span class="bc-projectbar__item-stack">${escapeHtml(project.stack)}</span>`;
+                    `<span class="bc-projectbar__item-stack">${escapeHtml(project.stack)}</span>` +
+                    `<span class="bc-projectbar__item-actions">` +
+                        `<button type="button" data-action="rename" title="Rename project">&#9998;</button>` +
+                        `<button type="button" data-action="delete" title="Delete project">&#128465;</button>` +
+                    `</span>`;
 
                 const select = () => {
-                    this._toggle(false);
-                    if (project.path !== AppState.getProjectRoot()) {
-                        AppState.setProjectRoot(project.path);
+                    // See selectHome()'s comment — same deal here.
+                    if (project.path === AppState.getProjectRoot()) {
+                        this._toggle(false);
+                        return;
+                    }
+                    if (AppState.setProjectRoot(project.path)) {
+                        this._toggle(false);
                     }
                 };
                 li.addEventListener('click', select);
@@ -188,7 +203,74 @@
                         select();
                     }
                 });
+
+                // stopPropagation so these don't also trigger select() above.
+                li.querySelector('[data-action="rename"]').addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this._toggle(false);
+                    this._renameProject(project);
+                });
+                li.querySelector('[data-action="delete"]').addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this._toggle(false);
+                    this._deleteProject(project);
+                });
+
                 this.dropdownEl.appendChild(li);
+            }
+        }
+
+        /**
+         * Renames the project's actual top-level folder (this switcher only
+         * ever discovers projects at the top level of storage — see
+         * refresh()'s docblock) via WebDAV MOVE. If this is the currently
+         * active project, AppState.renameProjectRoot() follows the rename
+         * live — open tabs stay open, nothing is discarded, since their
+         * paths are relative to the root and didn't change.
+         */
+        async _renameProject(project) {
+            const newName = global.prompt(`Rename project "${project.name}" (folder: ${project.path}) to:`, project.path);
+            if (!newName || newName === project.path) return;
+            if (newName.includes('/')) {
+                bus.emit(EVENTS.ERROR, { message: 'Project names can\'t contain "/".' });
+                return;
+            }
+
+            const homeClient = new WebDavClient('');
+            try {
+                await homeClient.move(project.path, newName);
+                AppState.renameProjectRoot(project.path, newName);
+                await this.refresh();
+            } catch (err) {
+                bus.emit(EVENTS.ERROR, { message: `Could not rename project "${project.name}"`, error: err });
+            }
+        }
+
+        /**
+         * Deletes the project's folder outright — WebDAV DELETE on the
+         * whole subtree, same as any other file-tree delete, just scoped
+         * to a project root instead of one file. If the deleted project
+         * was the currently active one, switches back to Home; that
+         * itself goes through AppState.setProjectRoot()'s own unsaved-
+         * changes confirm, which can decline the switch (a second,
+         * separate confirm from the delete confirm below) — the project
+         * is deleted on disk either way at that point, so declining just
+         * leaves the workspace pointed at a now-nonexistent root until
+         * the person picks somewhere else from this same dropdown.
+         */
+        async _deleteProject(project) {
+            if (!global.confirm(`Delete project "${project.name}" and everything in it? This cannot be undone.`)) {
+                return;
+            }
+            const homeClient = new WebDavClient('');
+            try {
+                await homeClient.delete(project.path);
+                if (AppState.getProjectRoot() === project.path) {
+                    AppState.setProjectRoot('');
+                }
+                await this.refresh();
+            } catch (err) {
+                bus.emit(EVENTS.ERROR, { message: `Could not delete project "${project.name}"`, error: err });
             }
         }
     }

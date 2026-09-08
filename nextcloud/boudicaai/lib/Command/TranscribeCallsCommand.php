@@ -13,6 +13,30 @@ use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
+/**
+ * ⚠️ DO NOT ADD THIS COMMAND TO CRON AS-IS — it will race JanusTranscriptionCommand
+ * and silently corrupt real call recordings. Both this command's WHERE clause
+ * (transcription_status='pending' AND transcript_text IS NULL) and
+ * JanusTranscriptionCommand::matchTranscriptRow()'s query match the SAME rows:
+ * CallRecordingListener::handleCallEnded() sets transcription_status='pending'
+ * with file_path left NULL, specifically so JanusTranscriptionCommand (its own
+ * docblock: "Marks the tracking row as ready for JanusTranscriptionCommand to
+ * pick up") can later match it to the actual .mjr file and fill file_path in.
+ *
+ * If this command runs first, it calls transcribeFile(NULL) on that same row,
+ * fails, and marks transcription_status='failed' — which JanusTranscriptionCommand
+ * never looks at (it only matches 'pending' rows), so the real recording is then
+ * permanently invisible to the pipeline that was supposed to transcribe it.
+ *
+ * This class predates the current Janus-native pipeline (see
+ * JanusTranscriptionCommand's docblock: "removes the old docker-cp step
+ * entirely... Janus is now a native process") and nothing currently invokes it —
+ * the manual-upload "@boudica transcribe this call" path already transcribes
+ * synchronously in TalkBotInvokeListener::scheduleTranscriptionJob(), not via
+ * this command. Left in place, unscheduled, pending a decision on whether to
+ * remove it or rescope its query to exclude Janus-owned rows before ever
+ * cron-scheduling it.
+ */
 class TranscribeCallsCommand extends Command {
     protected static $defaultName = 'boudicaai:transcribe-calls';
 

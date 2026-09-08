@@ -110,9 +110,24 @@
                 this._showError('Folder picker unavailable in this Nextcloud version — creating at the top level.');
                 return;
             }
+
+            // Nextcloud's native filepicker is a separate dialog system with
+            // its own stacking context. Depending on the Nextcloud version's
+            // own z-index, it can render BEHIND this modal's overlay, which
+            // then swallows clicks meant for the picker (this modal's own
+            // "click outside closes" handler sees them instead) -- the
+            // picker looks open but nothing in it is clickable. Rather than
+            // trying to out-z-index a dialog system this app doesn't
+            // control, hide this modal for the picker's lifetime and bring
+            // it back once the picker's own DOM is gone -- covers both
+            // "a folder was picked" and "cancelled", since the picker's
+            // callback isn't reliably invoked on cancel across versions.
+            const restore = this._hideWhilePicking();
+
             OC.dialogs.filepicker(
                 'Choose a location for the new project',
                 (path) => {
+                    restore();
                     this.destination = (path || '').replace(/^\/+/, '');
                     this.destLabelEl.textContent = this.destination ? `/${this.destination}` : '/ (top level)';
                 },
@@ -121,6 +136,38 @@
                 true, // modal
                 OC.dialogs.FILEPICKER_TYPE_CHOOSE
             );
+        }
+
+        /**
+         * Hides this modal and returns a `restore` function that brings it
+         * back. Also watches the DOM so `restore` fires on its own once
+         * Nextcloud's filepicker dialog is gone, in case its callback never
+         * runs (e.g. the person hits Cancel). Safe to call `restore`
+         * multiple times/from multiple triggers.
+         */
+        _hideWhilePicking() {
+            if (this.el) this.el.style.visibility = 'hidden';
+
+            let restored = false;
+            const restore = () => {
+                if (restored) return;
+                restored = true;
+                if (this.el) this.el.style.visibility = '';
+                observer.disconnect();
+                clearTimeout(safetyTimer);
+            };
+
+            const observer = new MutationObserver(() => {
+                if (!document.querySelector('.oc-dialog, .oc-dialog-container')) {
+                    restore();
+                }
+            });
+            observer.observe(document.body, { childList: true, subtree: true });
+            // In case some Nextcloud version's picker markup doesn't match
+            // the selector above -- never leave this modal hidden forever.
+            const safetyTimer = setTimeout(restore, 60000);
+
+            return restore;
         }
 
         _showError(message) {
@@ -143,8 +190,15 @@
 
             try {
                 const { projectRoot } = await ProjectCreator.createProject(this.destination, name, stack);
-                AppState.setProjectRoot(projectRoot);
+                // Refresh listeners (project bar/file tree) regardless of
+                // whether the switch below actually happens — the project
+                // exists on disk either way. setProjectRoot() itself
+                // confirms first if unsaved changes are open elsewhere; if
+                // declined, the project stays created but isn't entered —
+                // that native confirm dialog already explains the tradeoff,
+                // so there's nothing further to say here before closing.
                 bus.emit(EVENTS.CHAT_COMMAND_EXECUTED, { command: 'new', result: { projectRoot } });
+                AppState.setProjectRoot(projectRoot);
                 this._close();
             } catch (err) {
                 this._showError(err.message);

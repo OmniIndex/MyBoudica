@@ -68,8 +68,17 @@ use Psr\Log\LoggerInterface;
 class KeycloakLoginController extends Controller {
     // Internal Docker-network address for boudica_slm's shared Keycloak -
     // fixed container-to-container hop, not deployment-configurable (see
-    // the matching note in KeycloakProvisioningService).
-    private const KEYCLOAK_INTERNAL_URL = 'http://keycloak:8080';
+    // the matching note in KeycloakProvisioningService). Includes /kc -
+    // boudica_slm's Keycloak container always sets KC_HTTP_RELATIVE_PATH=
+    // /kc (see product_templates/multiuser/docker-compose.yml and its own
+    // boudica-le-ssl.conf's hardcoded /kc ProxyPass) - every internal call
+    // 404s without it. Confirmed live 2026-09-06 on ts-1-boudica: this bug
+    // was never exposed on the original dev-box build since that box's
+    // Keycloak apparently didn't use a relative path - it silently broke
+    // every real login attempt here (exchangeCodeForToken()/fetchUserinfo()
+    // both 404, Guzzle throws, caught and surfaced as a generic "could not
+    // reach the identity server" error with no hint of the real cause).
+    private const KEYCLOAK_INTERNAL_URL = 'http://keycloak:8080/kc';
     private const PROVISION_CHECK_URL = 'http://web:80/cgi-bin/provision_check';
 
     private const SESSION_STATE_KEY = 'boudica_kc_state';
@@ -145,10 +154,12 @@ class KeycloakLoginController extends Controller {
             return $this->errorPage($this->l()->t('Sign-in failed (expired or invalid request). Please try again.'));
         }
 
-        $accessToken = $this->exchangeCodeForToken($code, (string) $verifier);
-        if ($accessToken === null) {
+        $tokens = $this->exchangeCodeForToken($code, (string) $verifier);
+        if ($tokens === null) {
             return $this->errorPage($this->l()->t('Sign-in failed (could not reach the identity server). Please try again.'));
         }
+        $accessToken = $tokens['access_token'];
+        $idToken = $tokens['id_token'];
 
         // Fetched independently from Keycloak's own userinfo endpoint rather
         // than trusting provision_check's response for identity -
@@ -210,6 +221,18 @@ class KeycloakLoginController extends Controller {
         // request treats the session as invalid and forcibly clears it.
         $this->userSession->createSessionToken($this->request, $email, $email, $password);
 
+        // Stored so LogoutRedirectListener can pass it as id_token_hint on
+        // logout - without it, Keycloak's end-session endpoint can't verify
+        // who's asking and shows its own "do you want to log out?"
+        // confirmation page instead of just doing it (confirmed live: a
+        // GET to the logout endpoint with only client_id + a registered
+        // post_logout_redirect_uri, no id_token_hint, returned a real
+        // Keycloak logout-confirmation form, not a redirect). A stale
+        // token here just means that one logout falls back to the
+        // confirmation page - not a hard failure, so this is stored
+        // best-effort like the API key below.
+        $this->config->setUserValue($email, 'boudicaai', 'keycloak_id_token', $idToken ?? '');
+
         // Best-effort: a failure here shouldn't undo an already-completed,
         // legitimately-provisioned Nextcloud login - the user can still set
         // a key manually via Settings if this doesn't succeed.
@@ -218,7 +241,10 @@ class KeycloakLoginController extends Controller {
         return new RedirectResponse($this->urlGenerator->linkToRoute('files.view.index'));
     }
 
-    private function exchangeCodeForToken(string $code, string $verifier): ?string {
+    /**
+     * @return array{access_token:string,id_token:?string}|null
+     */
+    private function exchangeCodeForToken(string $code, string $verifier): ?array {
         $realm = $this->config->getAppValue('boudicaai', 'keycloak_realm', 'boudica');
         $clientId = $this->config->getAppValue('boudicaai', 'keycloak_client_id', 'boudica-nextcloud');
         $tokenUrl = self::KEYCLOAK_INTERNAL_URL . '/realms/' . rawurlencode($realm) . '/protocol/openid-connect/token';
@@ -240,7 +266,15 @@ class KeycloakLoginController extends Controller {
 
         $body = json_decode((string) $response->getBody(), true);
         $accessToken = is_array($body) ? ($body['access_token'] ?? null) : null;
-        return is_string($accessToken) && $accessToken !== '' ? $accessToken : null;
+        if (!is_string($accessToken) || $accessToken === '') {
+            return null;
+        }
+        $idToken = is_array($body) ? ($body['id_token'] ?? null) : null;
+
+        return [
+            'access_token' => $accessToken,
+            'id_token' => is_string($idToken) && $idToken !== '' ? $idToken : null,
+        ];
     }
 
     /**
@@ -314,7 +348,14 @@ class KeycloakLoginController extends Controller {
             'keycloak_error',
             [
                 'message' => $message,
-                'loginUrl' => $this->urlGenerator->linkToRoute('core.login.showLoginForm'),
+                // ?direct=1 is required here - without it, auto-keycloak-
+                // login.js (BoudicaKeycloakLogin::load()) would immediately
+                // bounce this "Back to login" click straight back into
+                // Keycloak, looping on exactly the errors that landed
+                // someone here in the first place (e.g. seat_limit_reached
+                // - a fresh Keycloak login would just hit the same error
+                // again).
+                'loginUrl' => $this->urlGenerator->linkToRoute('core.login.showLoginForm') . '?direct=1',
             ],
             TemplateResponse::RENDER_AS_GUEST
         );

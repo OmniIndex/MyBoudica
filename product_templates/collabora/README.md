@@ -72,11 +72,55 @@ This:
    Talk's signaling/STUN/TURN servers - no admin-UI-only steps remain,
    everything is scripted.
 
+## Reverse proxy: bundled nginx vs. an existing host proxy
+
+Two supported shapes, chosen by one `setup.sh` prompt ("Does this box
+already have its own reverse proxy..."):
+
+- **Self-contained (default)** - this stack's own bundled `nginx` service
+  terminates TLS and answers on the configured HTTP/HTTPS ports directly.
+  Right for a sovereign/on-prem trial or any box with nothing else already
+  listening on 80/443. `setup.sh` generates a self-signed cert for this case
+  (see Install above).
+- **External-proxy** - a host-level reverse proxy already fronts this
+  domain (e.g. a box that already runs `boudica_slm`'s own multiuser stack
+  behind its own Apache with real Let's Encrypt certs). Answering yes here
+  skips this stack's nginx/TLS entirely; Nextcloud, Collabora, the Talk
+  signaling server, and Whiteboard are instead published on loopback-only
+  ports (`BOUDICA_*_LOCAL_PORT` in `.env`, prompted in this mode) for that
+  existing proxy to reach directly. `docker-compose.external-proxy.yml`
+  layers on the `extra_hosts` mapping Nextcloud needs to reach
+  `talk.<domain>`/`whiteboard.<domain>` server-side without a bundled nginx
+  to alias those names to (see that file's own comments for why). **This
+  mode does not configure the host proxy itself** - adding its ProxyPass/
+  vhost blocks for the new subdomains is a separate, later step for that
+  specific box.
+
+Either way, `setup.sh` writes `COMPOSE_PROFILES`/`COMPOSE_FILE` into `.env`
+so plain `docker compose up`/`down`/`ps` commands do the right thing
+automatically afterward, with no flags to remember.
+
 ## Self-service registration ("Sign in with Boudica")
 
 Nextcloud's own login page gets a second option, "Sign in with Boudica",
 alongside the normal local-account form the setup.sh-created admin user
-keeps using. It routes through the **exact same** Keycloak
+keeps using - and auto-redirects there on page load (no click needed),
+via `auto-keycloak-login.js`. Visit `/login?direct=1` to see the normal
+login page (both the local form and the Boudica button) without the
+auto-redirect - e.g. for the admin account, or to troubleshoot. Nextcloud
+core already redirects a *failed* local-login attempt back to
+`/login?direct=1` by itself for exactly this reason, and this app's own
+error page (seat-limit/disabled-account messages) does the same on its
+"Back to login" link - neither loops back into Keycloak.
+
+"Log out" is intercepted site-wide (`intercept-logout.js`) so it actually
+logs out, rather than the browser silently re-authenticating straight
+back in via Keycloak's still-live SSO cookie - it ends the Keycloak
+session first (via the id_token captured at login, so it's one click, not
+Keycloak's own "do you want to log out?" confirmation page), then
+Nextcloud's own logout runs as normal.
+
+It routes through the **exact same** Keycloak
 self-registration + domain/seat provisioning already live for the
 standalone chat interface (`boudislm.provision_user()`,
 `/cgi-bin/provision_check`) - no separate gating logic, no code changes to
@@ -132,6 +176,22 @@ if that's what a given install actually needs.
   address instead of the bundled container's.
 - **Collabora/Janus**: the two most CPU/RAM-heavy pieces in *this* stack
   under real load - split onto their own box the same way.
+
+## Branding
+
+Ships pre-themed as "My Boudica" - name, slogan, primary/background colors,
+logo, header logo, background, and favicon are all applied automatically
+by `setup.sh`, pulled from the live `eu1.myboudica.com` install's own
+Theming settings (2026-09-04) so a fresh deployment matches production out
+of the box instead of showing stock Nextcloud branding until someone
+redoes it by hand. The 4 images are baked into the Nextcloud image
+(`nextcloud/theming/images/`, applied via `nextcloud/theming/
+apply-theming.php` - calls the same internal `ImageManager::updateImage()`
+the admin Theming page's own image upload uses, no browser/admin-session
+needed) and the text values go through `occ theming:config`. A deployment
+that wants different branding: replace the 4 files under `nextcloud/
+theming/images/` and/or edit the `occ theming:config` calls in `setup.sh`,
+then rebuild and re-run - safe to re-run, both mechanisms just overwrite.
 
 ## What's genuinely custom here vs. stock
 
