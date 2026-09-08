@@ -155,8 +155,37 @@ if [[ -z "$TURN_PUBLIC_IP" ]]; then
     echo "Detected: $TURN_PUBLIC_IP"
 fi
 
-read -rp "SMTP relay host for outbound mail (e.g. smtp.sendgrid.net:587 - leave blank to \
+read -rp "SMTP relay host for outbound mail (e.g. smtp.gmail.com:587 - leave blank to \
 disable outbound mail for now): " SMTP_RELAYHOST
+if [[ -n "$SMTP_RELAYHOST" ]]; then
+    read -rp "SMTP relay username (leave blank if this relay doesn't need auth): " SMTP_RELAYHOST_USERNAME
+    if [[ -n "$SMTP_RELAYHOST_USERNAME" ]]; then
+        read -rsp "SMTP relay password (for Gmail, use an App Password, not your \
+regular account password): " SMTP_RELAYHOST_PASSWORD
+        echo
+    fi
+fi
+# Nextcloud's From address (and this box's local Postfix relay's own
+# ALLOWED_SENDER_DOMAINS allowlist - see the mail: service in
+# docker-compose.yml) both have to agree with whatever mailbox actually
+# authenticates to the upstream relay. Gmail in particular rejects/mangles
+# a From header that doesn't match the authenticated account's own domain
+# (confirmed live 2026-09-08: sending From noreply@$BOUDICA_DOMAIN while
+# authenticating as a *.gmail.com relay user got rejected twice over -
+# once by our own Postfix's check_sender_access, since ALLOWED_SENDER_DOMAINS
+# only ever listed $BOUDICA_DOMAIN, and it would have been rejected a
+# second time further upstream by Gmail even if that first check were
+# fixed). So derive both the local part and the domain from the relay
+# username itself whenever it looks like an email address, rather than
+# assuming a noreply@$BOUDICA_DOMAIN address that was never actually
+# registered with the upstream provider.
+if [[ "$SMTP_RELAYHOST_USERNAME" == *@* ]]; then
+    MAIL_FROM_LOCAL="${SMTP_RELAYHOST_USERNAME%%@*}"
+    MAIL_FROM_DOMAIN="${SMTP_RELAYHOST_USERNAME#*@}"
+else
+    MAIL_FROM_LOCAL="noreply"
+    MAIL_FROM_DOMAIN="${BOUDICA_DOMAIN}"
+fi
 
 read -rp "Whisper model size (tiny/base/small/medium/large-v3) [base]: " WHISPER_MODEL
 WHISPER_MODEL="${WHISPER_MODEL:-base}"
@@ -190,6 +219,10 @@ BOUDICA_TALKBOT_API_KEY=$(gen_talkbot_key)
 TURN_PUBLIC_IP=${TURN_PUBLIC_IP}
 BOUDICA_API_ENDPOINT=${BOUDICA_API_ENDPOINT}
 SMTP_RELAYHOST=${SMTP_RELAYHOST}
+SMTP_RELAYHOST_USERNAME=${SMTP_RELAYHOST_USERNAME:-}
+SMTP_RELAYHOST_PASSWORD=${SMTP_RELAYHOST_PASSWORD:-}
+MAIL_FROM_LOCAL=${MAIL_FROM_LOCAL}
+MAIL_FROM_DOMAIN=${MAIL_FROM_DOMAIN}
 WHISPER_MODEL=${WHISPER_MODEL}
 BOUDICA_HTTP_PORT=${BOUDICA_HTTP_PORT}
 BOUDICA_HTTPS_PORT=${BOUDICA_HTTPS_PORT}
@@ -555,6 +588,52 @@ docker compose exec -u www-data -T nextcloud php occ config:app:set boudicaai ke
 # via boudica_shared) rather than a whisper container of this stack's own.
 docker compose exec -u www-data -T nextcloud php occ config:app:set boudicaai whisper_service_url \
     --value="http://whisper:5000"
+
+# Nextcloud's own outbound mail config (password-reset emails, share
+# notifications, etc.) - previously never set at all despite the mail:
+# (boky/postfix) container running right alongside it, so occ never had
+# a reason to actually route mail through it (confirmed live 2026-09-08:
+# `occ config:list system` had zero mail_* keys). Nextcloud talks SMTP to
+# the mail container over the compose network (host "mail", port 25,
+# unauthenticated - the mail container itself is what authenticates
+# outward to the real relay via RELAYHOST_USERNAME/PASSWORD in
+# docker-compose.yml), so mail_smtpauth stays 0 here regardless of
+# whether the upstream relay needs auth. Only runs if a relay was
+# actually configured - otherwise leave Nextcloud's mail config untouched
+# so `occ` doesn't claim mail is set up when nothing will deliver it.
+#
+# mail_smtpstreamoptions disables TLS peer-cert verification specifically
+# for THIS hop (Nextcloud -> the local mail container over the internal
+# compose network, port 25) - boky/postfix self-signs its own opportunistic-
+# STARTTLS cert, which Symfony Mailer otherwise refuses with "certificate
+# verify failed" (confirmed live 2026-09-08 - the send failed silently,
+# logged but not thrown, since OC\Mail\Mailer::send() catches transport
+# exceptions and returns failed recipients rather than raising). This does
+# NOT weaken the real security boundary - authentication/TLS to the actual
+# upstream relay (Gmail) happens entirely inside the mail container via
+# RELAYHOST_USERNAME/PASSWORD, never visible to Nextcloud at all.
+#
+# mail_from_address/mail_domain use MAIL_FROM_LOCAL/MAIL_FROM_DOMAIN
+# (derived above from SMTP_RELAYHOST_USERNAME) rather than a guessed
+# noreply@$BOUDICA_DOMAIN address - see that derivation's own comment.
+# ALLOWED_SENDER_DOMAINS in docker-compose.yml's mail: service must
+# include this same MAIL_FROM_DOMAIN or the local Postfix relay's own
+# check_sender_access rejects the message before it ever reaches the
+# upstream relay (confirmed live 2026-09-08: "554 5.7.1 Recipient address
+# rejected: Access denied" - despite the name, this fires off the
+# *sender's* domain, not the recipient's, when it isn't in that allowlist).
+if [[ -n "$SMTP_RELAYHOST" ]]; then
+    docker compose exec -u www-data -T nextcloud php occ config:system:set mail_smtpmode --value="smtp"
+    docker compose exec -u www-data -T nextcloud php occ config:system:set mail_smtphost --value="mail"
+    docker compose exec -u www-data -T nextcloud php occ config:system:set mail_smtpport --value="25"
+    docker compose exec -u www-data -T nextcloud php occ config:system:set mail_smtpauth --value="0" --type=integer
+    docker compose exec -u www-data -T nextcloud php occ config:system:set mail_smtpsecure --value=""
+    docker compose exec -u www-data -T nextcloud php occ config:system:set mail_domain --value="${MAIL_FROM_DOMAIN}"
+    docker compose exec -u www-data -T nextcloud php occ config:system:set mail_from_address --value="${MAIL_FROM_LOCAL}"
+    docker compose exec -u www-data -T nextcloud php occ config:system:set mail_smtpstreamoptions ssl allow_self_signed --value=true --type=boolean
+    docker compose exec -u www-data -T nextcloud php occ config:system:set mail_smtpstreamoptions ssl verify_peer --value=false --type=boolean
+    docker compose exec -u www-data -T nextcloud php occ config:system:set mail_smtpstreamoptions ssl verify_peer_name --value=false --type=boolean
+fi
 
 # richdocuments (Collabora integration, bundled by default - unlike Talk,
 # no separate app:install needed) derives its default wopi_url from

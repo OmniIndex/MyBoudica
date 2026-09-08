@@ -232,15 +232,34 @@ services:
 
   mail:
     # Lightweight relay only - real outbound delivery/sender verification is
-    # external (SendGrid or similar), same as the native deployment. This
-    # container's only job is giving Nextcloud a local SMTP hop that's up
-    # before Nextcloud is (native Postfix's own boot-order bug, RUNBOOK.md
-    # 4.6, doesn't exist here since compose brings services up in dependency
-    # order rather than racing systemd units at host boot).
+    # external (Gmail/Workspace SMTP relay, or SendGrid/similar), same as
+    # the native deployment. This container's only job is giving Nextcloud
+    # a local SMTP hop that's up before Nextcloud is (native Postfix's own
+    # boot-order bug, RUNBOOK.md 4.6, doesn't exist here since compose
+    # brings services up in dependency order rather than racing systemd
+    # units at host boot).
+    # RELAYHOST_USERNAME/PASSWORD were missing entirely until 2026-09-08 -
+    # boky/postfix supports an authenticated upstream relay (needed for
+    # Gmail, which refuses unauthenticated relaying) but nothing here ever
+    # passed the credentials through, so RELAYHOST alone silently produced
+    # an unauthenticated connection Gmail would reject. Empty by default
+    # (a relay with no auth, e.g. an internal mail gateway, still works
+    # with these unset).
     image: boky/postfix:latest
     environment:
-      ALLOWED_SENDER_DOMAINS: ${BOUDICA_DOMAIN}
+      # Space-separated - both this box's own domain (any future sender
+      # that legitimately uses it) and MAIL_FROM_DOMAIN (setup.sh, derived
+      # from SMTP_RELAYHOST_USERNAME - the actual sender Nextcloud uses
+      # today when relaying through Gmail, see setup.sh's own comment).
+      # Missing MAIL_FROM_DOMAIN here caused a real, confirmed-live outage
+      # (2026-09-08): Postfix's check_sender_access rejected every message
+      # with "554 5.7.1 Recipient address rejected: Access denied" - the
+      # message is misleading, this check is actually keyed on the
+      # *sender's* domain, not the recipient's.
+      ALLOWED_SENDER_DOMAINS: ${BOUDICA_DOMAIN} ${MAIL_FROM_DOMAIN:-}
       RELAYHOST: ${SMTP_RELAYHOST:-}
+      RELAYHOST_USERNAME: ${SMTP_RELAYHOST_USERNAME:-}
+      RELAYHOST_PASSWORD: ${SMTP_RELAYHOST_PASSWORD:-}
     restart: unless-stopped
 
   whiteboard:
