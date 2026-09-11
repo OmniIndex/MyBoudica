@@ -103,7 +103,27 @@ class TranscriptCleanupService {
         // markdown ** / # - TranscriptEmailService renders this inside a
         // white-space:pre-wrap block, not through an HTML markdown
         // renderer, so literal markdown syntax would just show up as-is).
-        $prompt = "No Memory. The following is a raw, auto-generated transcript of a "
+        //
+        // Rewritten again 2026-09-11: this previously used literal quote
+        // marks around the mishearing examples (e.g. "buddhica" means
+        // "Boudica") and around the bullet marker. Confirmed live via a
+        // byte-precise bisection of the actual request that inference_server
+        // silently drops everything in the message after the FIRST embedded
+        // double-quote character - prompt_tokens plateaued at exactly the
+        // same value regardless of how much text followed it, all the way
+        // up to the real 3497-character prompt. Root cause not yet found
+        // (parse_json_string() itself correctly handles \" escaping, so
+        // this is happening somewhere else downstream); this rewrite is a
+        // workaround, not a fix - avoids embedded quote characters
+        // entirely rather than depending on them being handled correctly.
+        // Also adds an explicit "minimal reasoning" instruction: this model
+        // is a "thinking" model that can spend its entire token budget on
+        // internal reasoning before ever producing an answer (confirmed:
+        // "[Response incomplete: generation ran out of budget while
+        // reasoning. Please retry.]"), and this exact phrasing reliably
+        // suppresses that in the live chat UI.
+        $prompt = "No Memory. Keep your reasoning to a minimum. The following is a "
+            . "raw, auto-generated transcript of a "
             . "phone/video call. Produce a clear, well-organized summary for the "
             . "participants — something someone can skim in under a minute, not a "
             . "verbatim cleanup. Only include what is explicitly present in the "
@@ -111,17 +131,17 @@ class TranscriptCleanupService {
             . "weren't actually said. The transcript comes from imperfect "
             . "speech-to-text, so silently correct obvious mishearings of this "
             . "product's own names when you're confident that's what was meant - "
-            . "e.g. \"buddhica\"/\"ludicrous office\" means \"Boudica\"/\"Boudica "
-            . "Office\", \"booty.ca\"/\"my booty\" means \"boudi.ca\"/\"MyBoudica\". "
+            . "e.g. buddhica or ludicrous office means Boudica or Boudica Office, "
+            . "and booty.ca or my booty means boudi.ca or MyBoudica. "
             . "Don't guess at unrelated words this way, only this product's own "
             . "recurring, predictable mishearings.\n\n"
             . "Format your response as plain text using exactly this structure — "
             . "skip a section entirely if the transcript has nothing for it (don't "
-            . "write 'None'), and use blank lines between sections:\n\n"
+            . "write the word None), and use blank lines between sections:\n\n"
             . "OVERVIEW\n"
             . "One or two sentences on what the call was about.\n\n"
             . "KEY DISCUSSION POINTS\n"
-            . "- One bullet per topic actually discussed, each starting with \"- \".\n\n"
+            . "- One bullet per topic actually discussed, each starting with a dash and a space.\n\n"
             . "DECISIONS\n"
             . "- Any concrete decisions that were made.\n\n"
             . "ACTION ITEMS\n"
