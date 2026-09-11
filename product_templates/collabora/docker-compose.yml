@@ -139,7 +139,22 @@ services:
       # var so tightening this later doesn't require an image change.
       aliasgroup1: https://${BOUDICA_DOMAIN}:${BOUDICA_HTTPS_PORT:-443}
       DONT_GEN_SSL_CERT: "true"
-      extra_params: --o:ssl.enable=false --o:ssl.termination=true
+      # --o:mount_jail_tree=false (2026-09-11): this container runs
+      # unprivileged with no added capabilities (correctly - SYS_ADMIN is
+      # close to a full container-escape-capable capability, not something
+      # to grant for this). coolwsd's default mount_jail_tree=true needs
+      # its own `coolmount` helper to bind-mount each child process's jail,
+      # which requires CAP_SYS_ADMIN; without it every mount attempt fails
+      # ("Failed to exec coolmount... needs CAP_SYS_ADMIN", confirmed live,
+      # both here and on ts-1-boudica, in collabora-collabora-1's own
+      # logs) - including the mount used to hand a just-uploaded local file
+      # into a document's Insert Image/File dialog, which is what actually
+      # surfaces to a user as "Uploading file to server failed, file not
+      # found." coolwsd's own error text names this exact env var as the
+      # supported alternative: falls back to copying/linking files into
+      # the jail instead of mounting them, slower per the upstream docs
+      # but doesn't need the capability at all.
+      extra_params: --o:ssl.enable=false --o:ssl.termination=true --o:mount_jail_tree=false
       # coolwsd's own default CSP (style-src 'self';) blocks the widget's
       # dynamically-injected <style> tag outright - confirmed live the
       # widget's JS/HTML loaded fine but every rule in it was silently
