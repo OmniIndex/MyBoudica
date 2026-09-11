@@ -108,7 +108,13 @@ class TranscriptCleanupService {
             . "participants — something someone can skim in under a minute, not a "
             . "verbatim cleanup. Only include what is explicitly present in the "
             . "transcript; never invent names, people, decisions, or events that "
-            . "weren't actually said.\n\n"
+            . "weren't actually said. The transcript comes from imperfect "
+            . "speech-to-text, so silently correct obvious mishearings of this "
+            . "product's own names when you're confident that's what was meant - "
+            . "e.g. \"buddhica\"/\"ludicrous office\" means \"Boudica\"/\"Boudica "
+            . "Office\", \"booty.ca\"/\"my booty\" means \"boudi.ca\"/\"MyBoudica\". "
+            . "Don't guess at unrelated words this way, only this product's own "
+            . "recurring, predictable mishearings.\n\n"
             . "Format your response as plain text using exactly this structure — "
             . "skip a section entirely if the transcript has nothing for it (don't "
             . "write 'None'), and use blank lines between sections:\n\n"
@@ -138,6 +144,22 @@ class TranscriptCleanupService {
                     // rewriting task on text already fully provided in the
                     // prompt, not a question that benefits from retrieval.
                     'use_rag' => false,
+                    // 2026-09-11: a real call transcript almost always
+                    // contains the word "then" as ordinary conversation,
+                    // which false-positives inference_server.cpp's
+                    // AgenticWorkflow::is_multi_task() keyword heuristic
+                    // (built for short commands like "check my email then
+                    // my calendar") — the request got silently misrouted
+                    // through the agentic planner, which dropped this
+                    // prompt's actual summarization instructions and left
+                    // the model staring at a bare transcript with no task,
+                    // producing a garbage "please provide the transcript"
+                    // reply that then got emailed to participants as the
+                    // summary. This is a one-off rewriting task on text
+                    // already fully provided above, never a multi-step
+                    // command — opt out explicitly rather than rely on the
+                    // heuristic not misfiring.
+                    'allow_agentic' => false,
                 ],
                 'timeout' => 90,
                 // Same local/trial, no-external-exposure self-signed-cert
@@ -145,7 +167,13 @@ class TranscriptCleanupService {
                 'verify' => false,
             ]);
 
-            $data = json_decode($response->getBody(), true);
+            // getBody() returns a GuzzleHttp\Psr7\Stream, not a string -
+            // json_decode() needs a string. Confirmed live 2026-09-10: this
+            // threw a TypeError on every real call, meaning cleanup never
+            // actually ran once, ever - every transcript sent so far
+            // silently fell back to the raw, unpunctuated wall of text
+            // regardless of how well the prompt above was written.
+            $data = json_decode((string) $response->getBody(), true);
             $cleaned = $data['response'] ?? null;
 
             if (!$cleaned || !is_string($cleaned)) {
