@@ -26,6 +26,18 @@ external `boudi.ca` SaaS.
   Janus + signaling) on top of whatever `boudica_slm` itself needs.
 - DNS: three A-records pointed at this box - your main domain,
   `talk.<domain>`, and `whiteboard.<domain>`.
+- **Firewall: three inbound rules, open to `0.0.0.0/0`, needed for Talk
+  calls to actually connect** (not just signal) - `3478/tcp` + `3478/udp`
+  (STUN/TURN), `20000-25000/udp` (Janus's own RTP media range, set in
+  `janus.jcfg`'s `rtp_port_range`), and `49152-65535/udp` (eturnal's TURN
+  relay range, set in `eturnal.yml`'s `relay_min_port`/`relay_max_port`).
+  **These need opening at both the box's own OS firewall (ufw/iptables) AND
+  your cloud provider's network security group, if it has one - they're
+  separate layers, and the OS firewall alone is not enough.** `setup.sh`
+  will pause and remind you of this before it finishes. Symptom if this is
+  missed: both call participants can answer, but the call just keeps
+  "trying to connect" forever - signaling and room join succeed, only the
+  actual WebRTC media path is blocked. Confirmed live 2026-09-10.
 
 ## Install
 

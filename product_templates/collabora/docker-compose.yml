@@ -77,6 +77,20 @@ services:
       # this path) - shared with the janus service below.
       - janus_recordings:/mnt/janus-recordings:ro
       - ./generated/nextcloud/boudica-csp.conf:/etc/apache2/conf-available/boudica-csp.conf:ro
+      # Prototype 2026-09-09: exposes the multiuser stack's shared RAG
+      # corpus root (product_templates/multiuser's BOUDICA_MULTIUSER_CORPUS_DIR,
+      # host default /var/boudica/corpus_multiuser) so Nextcloud's
+      # files_external (External Storage) app can mount a user's own
+      # users/<email>/public/ subfolder as a folder inside their account -
+      # files they save there land directly in the same path
+      # inference_server.cpp's match_on:"user_id" domain_routing rule
+      # (rag_source_url_prefix_template: "users/{user_id}/") already routes
+      # their own RAG queries to, and rag-watcher already watches
+      # recursively. rw (not ro) since the whole point is letting users
+      # write into it via Nextcloud. Not yet wired per-user automatically
+      # at Nextcloud registration time - configured manually per user via
+      # occ files_external:create for now.
+      - /var/boudica/corpus_multiuser:/mnt/boudica_corpus
     restart: unless-stopped
 
   nextcloud-cron:

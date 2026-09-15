@@ -155,6 +155,29 @@ if [[ -z "$TURN_PUBLIC_IP" ]]; then
     echo "Detected: $TURN_PUBLIC_IP"
 fi
 
+# Talk calls will connect signaling fine and then hang forever "trying to
+# connect" (both participants answer, neither ever actually joins) if these
+# aren't open - confirmed live 2026-09-10 on ts-1-boudica: janus.jcfg's
+# public_ip/nat_1_1_mapping were correct and eturnal was listening
+# correctly, but a raw STUN request sent from a genuinely different network
+# still got no response at all on port 3478 - the box's own OS firewall
+# (ufw/iptables) is NOT the only layer that can block this. Any cloud
+# provider's network-level security group sits ABOVE the OS firewall and
+# needs these opened too, separately - ufw showing "ALLOW IN" is necessary
+# but not sufficient. Source 0.0.0.0/0 is correct/required for all three,
+# not a security shortcut - call participants can be anywhere on the
+# internet with unpredictable, NAT'd source IPs, same as any TURN/SFU
+# deployment (coturn, LiveKit, etc.).
+warn "Talk calls need THREE inbound port rules open to 0.0.0.0/0, at BOTH the \
+OS firewall (ufw/iptables) AND your cloud provider's network security group if it has one \
+(these are separate layers - the OS firewall alone is not enough):
+    - 3478/tcp + 3478/udp   (STUN/TURN signaling)
+    - 20000-25000/udp       (Janus's own RTP media - see janus.jcfg's rtp_port_range)
+    - 49152-65535/udp       (eturnal's TURN relay range - see eturnal.yml's relay_min/max_port)
+  Confirm both layers now if this box has a cloud firewall/security group - a call that lets \
+both participants answer but never actually connects is the exact symptom of this being missed."
+read -rp "Press Enter once the above ports are confirmed open (or Ctrl-C to stop and fix first): " _
+
 read -rp "SMTP relay host for outbound mail (e.g. smtp.gmail.com:587 - leave blank to \
 disable outbound mail for now): " SMTP_RELAYHOST
 if [[ -n "$SMTP_RELAYHOST" ]]; then

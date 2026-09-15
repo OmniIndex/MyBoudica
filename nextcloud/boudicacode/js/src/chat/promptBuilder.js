@@ -58,12 +58,22 @@
     }
 
     /** Ported from generate_code()'s prompt. */
-    /** @param {string} [headerContext] - if given, the .cpp must implement exactly this header (see buildHeaderPrompt + chatPanel.js's _createCppPair). */
-    function buildCreatePrompt(stack, description, headerContext) {
+    /**
+     * @param {string} [headerContext] - if given, the .cpp must implement exactly this header (see buildHeaderPrompt + chatPanel.js's _createCppPair).
+     * @param {string} [headerFilename] - the exact on-disk filename (e.g. "main.h") the header in `headerContext` was actually saved as. Without this,
+     *   the model tends to invent its own #include name (typically based on the class name, e.g. "CliCalculator.h") that doesn't match the real file
+     *   on disk, which fails the compile check with "No such file or directory" — reported live 2026-09-11. See also normalizeLocalHeaderInclude(),
+     *   which enforces this as a fallback in case the model still doesn't comply.
+     */
+    function buildCreatePrompt(stack, description, headerContext, headerFilename) {
         const headerClause = headerContext
-            ? `\n\nThis is the implementation file for a header that already exists. It must match this header ` +
-              `exactly — same function signatures, same class members, same names, nothing added or renamed:\n` +
-              `${headerContext}\n`
+            ? `\n\nThis is the implementation file for a header that already exists${headerFilename ? ` and has been saved as \`${headerFilename}\`` : ''}. ` +
+              `It must match this header exactly — same function signatures, same class members, same names, nothing added or renamed:\n` +
+              `${headerContext}\n` +
+              (headerFilename
+                  ? `\nYour #include directive for this header MUST be exactly \`#include "${headerFilename}"\` — do not invent a ` +
+                    `different filename (e.g. one based on the class name); the file only exists on disk as \`${headerFilename}\`.\n`
+                  : '')
             : '';
         return (
             `No Memory\n\n` +
@@ -77,18 +87,39 @@
         );
     }
 
-    /** Companion to buildCreatePrompt: asks for ONLY the header/interface, no implementation — see chatPanel.js's _createCppPair. */
-    function buildHeaderPrompt(stack, description) {
+    /**
+     * Companion to buildCreatePrompt: asks for ONLY the header/interface, no implementation — see chatPanel.js's _createCppPair.
+     * @param {string} [headerFilename] - the exact on-disk filename this header will be saved as, so the model doesn't need to guess one for its own header guard.
+     */
+    function buildHeaderPrompt(stack, description, headerFilename) {
         return (
             `No Memory\n\n` +
             `Design ONLY the header file (declarations/interface, no implementation) for a ${stack} program ` +
-            `that: ${description}\n\n` +
+            `that: ${description}${headerFilename ? `\n\nThis file will be saved as \`${headerFilename}\`.` : ''}\n\n` +
             `Include proper header guards (#pragma once). Declare classes/functions with full signatures but ` +
             `no function bodies (except trivial inline getters/setters if truly appropriate).\n` +
             `You are ONLY writing source code — do not attempt to actually browse the web, fetch URLs, call ` +
             `tools, or perform any of the program's actions yourself.\n` +
             `Output only the complete header file. No markdown, no explanations, no code fences.`
         );
+    }
+
+    /**
+     * Deterministic fallback for buildCreatePrompt's headerFilename instruction: rewrites (or inserts) the
+     * generated .cpp's local (quoted) include of its paired header to the real on-disk filename, in case the
+     * model didn't comply with the prompt. Only touches the first quoted `.h`/`.hpp` include — this pairing is
+     * always exactly one header, so there's never a second local header include to preserve. System includes
+     * (`#include <...>`) are left untouched.
+     */
+    function normalizeLocalHeaderInclude(code, headerFilename) {
+        const localHeaderRe = /^#include\s+"([^"]+\.(?:h|hpp))"\s*$/m;
+        const correctLine = `#include "${headerFilename}"`;
+        const match = code.match(localHeaderRe);
+
+        if (match) {
+            return match[1] === headerFilename ? code : code.replace(localHeaderRe, correctLine);
+        }
+        return `${correctLine}\n${code}`;
     }
 
     /** Ported from clarify_request()'s prompt. */
@@ -223,6 +254,7 @@
         validateEditRequest,
         buildCreatePrompt,
         buildHeaderPrompt,
+        normalizeLocalHeaderInclude,
         buildClarifyPrompt,
         cleanClarifiedResponse,
         buildEditPrompt,

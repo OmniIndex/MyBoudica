@@ -77,6 +77,135 @@ class TranscriptCleanupService {
         return !empty($endpoint);
     }
 
+    private const CANONICAL_SECTIONS = ['OVERVIEW', 'KEY DISCUSSION POINTS', 'DECISIONS', 'ACTION ITEMS'];
+
+    private function stripInlineMarkdown(string $line): string {
+        $line = preg_replace('/\*\*(.+?)\*\*/', '$1', $line);
+        $line = preg_replace('/__(.+?)__/', '$1', $line);
+        $line = preg_replace('/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/', '$1', $line);
+        $line = preg_replace('/^\s*#{1,6}\s*/', '', $line);
+        $line = preg_replace('/^\s*\d+[.)]\s+/', '- ', $line);
+        $line = preg_replace('/^\s*\*\s+/', '- ', $line);
+        return trim($line);
+    }
+
+    private function isHorizontalRule(string $line): bool {
+        $s = trim($line);
+        return strlen($s) >= 3 && preg_match('/^[-_=*]+$/', $s) === 1;
+    }
+
+    /** Only fires once the current section already has a real bullet, same as the
+     * Python reference implementation — OVERVIEW's prose is never bulleted, so this
+     * never truncates a legitimate multi-line overview. */
+    private function looksLikeStrayHeader(string $line, bool $sectionHasBullets): bool {
+        if (!$sectionHasBullets) {
+            return false;
+        }
+        $s = trim($line);
+        return $s !== '' && !str_starts_with($s, '-');
+    }
+
+    /**
+     * Deterministic post-processing pass over the LLM's raw summary — strips
+     * markdown, normalizes list markers, and drops any unrequested trailing
+     * section (e.g. "Additional Notes", "Final Note") the model appended
+     * after the four canonical sections despite the prompt's explicit
+     * "no markdown, exactly this structure" instructions.
+     *
+     * This exists because that instruction alone reliably failed against
+     * this model on this call path: confirmed 4/4 across two prompt
+     * phrasings (the second considerably more forceful) that the response
+     * still came back with markdown bold headers, numbered lists, and
+     * unrequested trailing sections, while an equivalent single-call
+     * production prompt elsewhere stayed clean 2/2. Root cause: this is a
+     * one-off task-specific prompt, not the main /chat path's adapter
+     * chain, so none of that chain's output-format discipline applies here
+     * — prompt-engineering against that gap didn't converge, so this
+     * removes the model from the formatting-compliance path entirely
+     * rather than trying a third prompt rewrite.
+     *
+     * Ported inline from the standalone `transcript-summary-formatter`
+     * Boudica App (boudica_slm's `apps/transcript-summary-formatter/bin/run.py`)
+     * rather than invoked through the Apps platform's broker
+     * (connector-supervisor's `/invoke`) — that endpoint is only reachable
+     * from inside the Boudica Docker network, not from this Nextcloud host.
+     * Keep both copies in sync if this logic changes.
+     */
+    private function formatTranscriptSummary(string $text): string {
+        $rawLines = preg_split('/\r\n|\r|\n/', $text);
+        $lines = [];
+        foreach ($rawLines as $l) {
+            $stripped = $this->stripInlineMarkdown($l);
+            if (!$this->isHorizontalRule($stripped)) {
+                $lines[] = $stripped;
+            }
+        }
+
+        $sections = [];
+        foreach (self::CANONICAL_SECTIONS as $h) {
+            $sections[$h] = [];
+        }
+
+        $headerPattern = '/^(' . implode('|', array_map(
+            static fn($h) => preg_quote($h, '/'), self::CANONICAL_SECTIONS
+        )) . ')\s*:?\s*$/i';
+
+        $current = null;
+        foreach ($lines as $line) {
+            if (preg_match($headerPattern, $line, $m)) {
+                foreach (self::CANONICAL_SECTIONS as $h) {
+                    if (strcasecmp($h, $m[1]) === 0) {
+                        $current = $h;
+                        break;
+                    }
+                }
+                continue;
+            }
+            if ($current === null) {
+                continue; // title line / preamble before the first known header
+            }
+            $hasBullets = false;
+            foreach ($sections[$current] as $existing) {
+                if (str_starts_with($existing, '-')) {
+                    $hasBullets = true;
+                    break;
+                }
+            }
+            if ($this->looksLikeStrayHeader($line, $hasBullets)) {
+                $current = null; // trailing junk — stop accumulating
+                continue;
+            }
+            if ($line !== '') {
+                $sections[$current][] = $line;
+            }
+        }
+
+        $blocks = [];
+        foreach (self::CANONICAL_SECTIONS as $name) {
+            $content = array_values(array_filter($sections[$name], static fn($l) => trim($l) !== ''));
+            if (empty($content)) {
+                continue;
+            }
+            $blocks[] = $name . "\n" . implode("\n", $content);
+        }
+        $output = implode("\n\n", $blocks);
+
+        if (trim($output) === '') {
+            // No canonical headers recognized at all — fall back to a plain
+            // markdown-stripped passthrough rather than returning nothing.
+            $stripped = [];
+            foreach ($rawLines as $l) {
+                $s = $this->stripInlineMarkdown($l);
+                if (!$this->isHorizontalRule($s)) {
+                    $stripped[] = $s;
+                }
+            }
+            $output = trim(implode("\n", $stripped));
+        }
+
+        return $output;
+    }
+
     /**
      * Returns the cleaned transcript, or null if cleanup is unavailable or
      * failed for any reason — callers should fall back to the raw
@@ -201,7 +330,7 @@ class TranscriptCleanupService {
                 return null;
             }
 
-            return trim($cleaned);
+            return $this->formatTranscriptSummary(trim($cleaned));
 
         } catch (\Throwable $e) {
             $this->logger->warning('Boudica: transcript cleanup failed, falling back to raw transcript: ' . $e->getMessage());

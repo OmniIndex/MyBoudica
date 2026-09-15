@@ -76,6 +76,11 @@
         return idx === -1 ? '' : path.slice(0, idx);
     }
 
+    function basename(path) {
+        const idx = path.lastIndexOf('/');
+        return idx === -1 ? path : path.slice(idx + 1);
+    }
+
     function ensureTrailingNewline(text) {
         return text.endsWith('\n') ? text : text + '\n';
     }
@@ -566,12 +571,14 @@
                 return this._createNewFile(cppPath, description, 'cpp', bubble);
             }
 
+            const headerFilename = basename(headerPath);
+
             bubble = bubble || this._appendMessage('bot', '', true);
             this._setMessage(bubble, `Designing the header ${headerPath}…`, true);
             try {
                 const headerRaw = await BoudicaApi.send(
                     this._sessionKey(),
-                    PromptBuilder.buildHeaderPrompt('cpp', description),
+                    PromptBuilder.buildHeaderPrompt('cpp', description, headerFilename),
                     { temperature: 0.5, maxTokens: 2048, signal: this._activeController?.signal }
                 );
                 const headerCode = PromptBuilder.cleanCodeResponse(headerRaw);
@@ -585,15 +592,23 @@
                 this._setMessage(bubble, `Wrote ${headerPath} — now implementing ${cppPath}…`, true);
                 const cppRaw = await BoudicaApi.send(
                     this._sessionKey(),
-                    PromptBuilder.buildCreatePrompt('cpp', description, headerCode),
+                    PromptBuilder.buildCreatePrompt('cpp', description, headerCode, headerFilename),
                     { temperature: 0.5, maxTokens: 8192, signal: this._activeController?.signal }
                 );
-                const cppCode = PromptBuilder.cleanCodeResponse(cppRaw);
+                let cppCode = PromptBuilder.cleanCodeResponse(cppRaw);
                 if (!cppCode.trim()) {
                     this._setMessage(bubble, `Wrote ${headerPath}, but Boudica returned an empty implementation for ${cppPath}.`, false, 'warning');
                     bus.emit(EVENTS.FILE_OPEN_REQUESTED, { path: headerPath });
                     return;
                 }
+                // Belt-and-suspenders: the prompt above tells the model the
+                // real header filename, but models still occasionally invent
+                // one based on the class name instead (e.g. "CliCalculator.h"
+                // for a header actually saved as "main.h") — reported live,
+                // causes a "No such file or directory" from the compile
+                // check. Force the include to the real filename rather than
+                // trusting compliance alone.
+                cppCode = PromptBuilder.normalizeLocalHeaderInclude(cppCode, headerFilename);
                 await this.davClient.writeFile(cppPath, ensureTrailingNewline(cppCode));
 
                 this._setMessage(bubble, `Created ${headerPath} and ${cppPath}.`, false, 'success');

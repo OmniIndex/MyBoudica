@@ -9,6 +9,7 @@ use OCA\BoudicaAi\Command\JanusTranscriptionCommand;
 use OCA\BoudicaAi\Listener\TalkBotInvokeListener;
 use OCA\BoudicaAi\Listener\CallRecordingListener;
 use OCA\BoudicaAi\Listener\LogoutRedirectListener;
+use OCA\BoudicaAi\Listener\RagStorageMountListener;
 use OCA\BoudicaAi\Login\BoudicaKeycloakLogin;
 use OCA\Talk\Events\BotInvokeEvent;
 use OCP\AppFramework\App;
@@ -16,6 +17,7 @@ use OCP\AppFramework\Bootstrap\IBootContext;
 use OCP\AppFramework\Bootstrap\IBootstrap;
 use OCP\AppFramework\Bootstrap\IRegistrationContext;
 use OCP\AppFramework\Http\Events\BeforeTemplateRenderedEvent;
+use OCP\User\Events\UserFirstTimeLoggedInEvent;
 
 class Application extends App implements IBootstrap {
     public const APP_ID = 'boudicaai';
@@ -55,6 +57,12 @@ class Application extends App implements IBootstrap {
         // logout-link interceptor it loads works wherever "Log out" is
         // clicked from.
         $context->registerEventListener(BeforeTemplateRenderedEvent::class, LogoutRedirectListener::class);
+
+        // Mounts each user's own RAG corpus slice as personal external
+        // storage on their first ever login - see RagStorageMountListener's
+        // own docblock. Previously only ever set up once, by hand, for a
+        // single test account.
+        $context->registerEventListener(UserFirstTimeLoggedInEvent::class, RagStorageMountListener::class);
     }
 
     public function boot(IBootContext $context): void {

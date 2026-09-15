@@ -831,71 +831,86 @@
             queuedFiles = [];
         }
 
-        function handlePIIDataClick() {
+        // Drives Collabora's own live search engine (.uno:ExecuteSearch) with
+        // regex mode on - the same mechanism app.searchService.highlightAll()
+        // uses for the chat "find X in the document" feature (confirmed by
+        // reading bundle.js directly off the live container), except that
+        // wrapper's payload has no regex field. Document text never leaves
+        // the LibreOffice kit process; only the pattern string does. Resolves
+        // to the match count reported on app.map's "search" event
+        // (searchResultSelection.length server-side).
+        function searchAllRegex(pattern, timeoutMs = 8000) {
+            return new Promise((resolve) => {
+                const cleanup = () => {
+                    clearTimeout(timer);
+                    app.map.off("search", onSearch);
+                };
+                // A pattern with zero matches may not fire "search" at all -
+                // treat a timeout as "not found" rather than an error.
+                const timer = setTimeout(() => { cleanup(); resolve(0); }, timeoutMs);
+                const onSearch = (e) => {
+                    cleanup();
+                    resolve(e && typeof e.count === "number" ? e.count : 0);
+                };
+                app.map.on("search", onSearch);
+                const vp = app.activeDocument.activeLayout.viewedRectangle;
+                app.socket.sendMessage("uno .uno:ExecuteSearch " + JSON.stringify({
+                    "SearchItem.SearchString": { type: "string", value: pattern },
+                    "SearchItem.ReplaceString": { type: "string", value: "1" },
+                    "SearchItem.Backward": { type: "boolean", value: false },
+                    "SearchItem.SearchStartPointX": { type: "long", value: vp.x1 },
+                    "SearchItem.SearchStartPointY": { type: "long", value: vp.y1 },
+                    // SvxSearchCmd::FIND=0 (single next match), FIND_ALL=1,
+                    // REPLACE=2, REPLACE_ALL=3 (confirmed against LibreOffice's
+                    // own srchitem.hxx) - this was wrongly left at 0, matching
+                    // the app's own pre-existing highlightAll() wrapper
+                    // (search.js's default), which explains getting exactly
+                    // one hit per category on a document with dozens.
+                    "SearchItem.Command": { type: "long", value: 1 },
+                    // Confirmed live 2026-09-10 (real PII test data, zero
+                    // matches across every pattern including the loose ones)
+                    // that "SearchItem.RegularExpression" - the field this
+                    // used before - is not a real SvxSearchItem field at
+                    // all, so it was silently ignored and every search ran
+                    // in literal mode. LibreOffice's actual regex switch is
+                    // "AlgorithmType2" (SearchOptions2, a short): 1=literal,
+                    // 2=REGEXP, 4=wildcard - see SearchAlgorithms2.idl.
+                    "SearchItem.AlgorithmType2": { type: "short", value: 2 }
+                }));
+            });
+        }
+
+        async function handlePIIDataClick() {
             // Scan document for PII data: Zip codes, Post codes, SSN, NI Numbers, Bank accounts, and Credit card numbers
             setProcessing(true);
-            
+
             // Create a streaming bubble to show progress
             const assistantBubble = createStreamingBubble();
             updateStreamingBubble(assistantBubble, 'Scanning document for PII data...');
-            
-            // Get document details to determine format
-            const details = getDocumentDetails();
-            
-            // Get document text based on format
-            let docTextPromise;
-            if (details.documentName.includes('.xlsx') || details.documentName.includes('.xls') || 
-                details.documentName.includes('.csv') || details.documentName.includes('.xlsm') || 
-                details.documentName.includes('.ods')) {
-                docTextPromise = downloadDocumentAsText('csv').then(text => text.replace(/,/g, ' '));
-            } else if (details.documentName.includes('.docx') || details.documentName.includes('.doc') || 
-                       details.documentName.includes('.odt')) {
-                docTextPromise = downloadDocumentAsText('txt');
-            } else if (details.documentName.includes('.pptx') || details.documentName.includes('.ppt') || 
-                       details.documentName.includes('.odp') || details.documentName.includes('.otp')) {
-                docTextPromise = downloadDocumentAsText('fodp').then(text => {
-                    const tagRegex = /<[^>]+>/g;
-                    return text.replace(tagRegex, '');
-                });
-            } else {
-                docTextPromise = getFullDocumentText().then(result => result.content);
-            }
-            
-            docTextPromise.then((docText) => {
-                // Define PII patterns
-                const piiPatterns = {
-                    'Zip Codes': /\b\d{5}(?:-\d{4})?\b/g,
-                    'Bank Accounts': /\b\d{8,16}\b/g,
-                    'SSNs': /\b\d{3}-\d{2}-\d{4}\b/g,
-                    'NI Numbers': /\b[A-CEGHJ-PR-TW-Z]{2}\d{6}[A-D]\b/g,
-                    'Credit Card Numbers': /\b\d{4}(?:[- ]?\d{4}){2,4}\b/g,
-                    'Email Addresses': /\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g
-                };
-                
-                // Count occurrences of each pattern
+
+            // Regex source strings (ICU regex, not JS RegExp objects) sent
+            // straight to LibreOffice's own search engine - see
+            // searchAllRegex above. Never extracts or downloads document text.
+            const piiPatterns = {
+                'Zip Codes': '\\b\\d{5}(-\\d{4})?\\b',
+                'Bank Accounts': '\\b\\d{8,16}\\b',
+                'SSNs': '\\b\\d{3}-\\d{2}-\\d{4}\\b',
+                'NI Numbers': '\\b[A-CEGHJ-PR-TW-Z]{2}\\d{6}[A-D]\\b',
+                'Credit Card Numbers': '\\b\\d{4}([- ]?\\d{4}){2,4}\\b',
+                'Email Addresses': '\\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}\\b'
+            };
+
+            try {
                 const foundPII = {};
-                const firstMatches = {};
                 for (const [name, pattern] of Object.entries(piiPatterns)) {
-                    const matches = docText.match(pattern);
-                    if (matches && matches.length > 0) {
-                        foundPII[name] = matches.length;
-                        firstMatches[name] = matches[0];
-                    }
+                    const count = await searchAllRegex(pattern);
+                    if (count > 0) foundPII[name] = count;
                 }
-                
-                // Highlight the first occurrence of each found pattern type
-                for (const [name, match] of Object.entries(firstMatches)) {
-                    try {
-                        app.searchService.highlightAll(match);
-                    } catch (e) {
-                        console.warn(`Could not highlight ${name}:`, e);
-                    }
-                }
-                
+
                 // Build message
                 let message = '';
                 let totalFound = 0;
-                
+
                 if (Object.keys(foundPII).length === 0) {
                     message = 'No PII data detected in the document.';
                 } else {
@@ -904,18 +919,18 @@
                         message += `- ${name}: ${count}\n`;
                         totalFound += count;
                     }
-                    message += `\n**Total: ${totalFound} potential PII items found**\n\nOccurrences have been highlighted in the document.`;
+                    message += `\n**Total: ${totalFound} potential PII items found**\n\nThe last matched category is highlighted in the document.`;
                 }
-                
+
                 updateStreamingBubble(assistantBubble, message);
                 setProcessing(false);
                 elements.input.focus();
-            }).catch((err) => {
+            } catch (err) {
                 updateStreamingBubble(assistantBubble, `Error scanning for PII: ${err.message}`);
                 console.error('PII scan error:', err);
                 setProcessing(false);
                 elements.input.focus();
-            });
+            }
         }
 
         function autoResizeTextarea() {
@@ -1516,9 +1531,15 @@
         const onMessage = (msg) => {
             if (msg.msgId !== "Download_As") return;
             cleanup();
+            // Logged deliberately: a 404 here means coolwsd handed back a
+            // URL the browser then couldn't fetch - the URL itself (host +
+            // path) is what tells you whether that's an nginx routing gap
+            // or coolwsd resolving its own public host wrong, so it needs
+            // to be visible without reopening the Network tab.
+            console.log('PII scan: Download_As URL:', msg.args.URL);
             fetch(msg.args.URL, { credentials: "include" })
                 .then(r => {
-                  if (!r.ok) throw new Error("Download fetch failed: " + r.status);
+                  if (!r.ok) throw new Error("Download fetch failed: " + r.status + " for " + msg.args.URL);
                      return r.text();
                 })
                 .then(resolve, reject);
