@@ -603,7 +603,7 @@
 
     // ── Run an agent ──────────────────────────────────────────────────────────
 
-    function showRunResult({ loading, title, text, error }) {
+    function showRunResult({ loading, title, text, error, status }) {
         const panel = document.getElementById('agentRunResultPanel');
         const titleEl = document.getElementById('agentRunResultTitle');
         const bodyEl  = document.getElementById('agentRunResultText');
@@ -615,6 +615,14 @@
 
         if (loading) {
             bodyEl.innerHTML = '<span class="agents-loading">Running…</span>';
+            if (status) {
+                // Live progress from the server (one line per agent step). Set
+                // via textContent - it is model/agent-supplied text, never HTML.
+                const line = document.createElement('div');
+                line.className = 'agents-run-status';
+                line.textContent = status;
+                bodyEl.appendChild(line);
+            }
         } else if (error) {
             bodyEl.textContent = error;
         } else {
@@ -632,7 +640,9 @@
 
         showRunResult({ loading: true, title: displayName });
         try {
-            const text = await AgentApi.runAgent(agentName, userInput);
+            const text = await AgentApi.runAgent(agentName, userInput, {
+                onStatus: (status) => showRunResult({ loading: true, title: displayName, status }),
+            });
             showRunResult({ title: displayName, text });
         } catch (err) {
             showRunResult({ title: displayName, error: err.message });

@@ -61,6 +61,18 @@
         } catch (err) {
             if (err instanceof TypeError) {
                 const origin = new URL(url).origin;
+                if (origin === global.location.origin) {
+                    // Same origin as the page: Nextcloud's CSP always allows
+                    // 'self', so a connect-src block is impossible here and
+                    // blaming it (as the message below does for a genuinely
+                    // cross-origin endpoint) sent a customer chasing the wrong
+                    // thing on 2026-09-21. This is a network-level failure.
+                    throw new Error(
+                        `Could not reach ${origin} (${err.message}). Your connection to the server was ` +
+                        `interrupted or unavailable - check your network/VPN and try again. If an agent ` +
+                        `was already running, it may have finished on the server, so running it again is safe.`
+                    );
+                }
                 throw new Error(
                     `Could not reach ${origin} (${err.message}). This is usually either the network, or ` +
                     `Nextcloud's Content-Security-Policy blocking the request — check the browser console ` +
@@ -134,8 +146,27 @@
      * Runs an agent by sending "@agentName userInput" to /chat —
      * same convention the original relied on the host chat page to
      * interpret. Returns the plain response text.
+     *
+     * STREAMS the response (stream: true) instead of waiting for one JSON
+     * body. A self-checking agent runs several LLM steps and takes 60-90+ s;
+     * with stream:false not a single byte reached the browser for that whole
+     * time, and a proxy/VPN/firewall on the customer's path dropped the idle
+     * connection ("Could not reach ... failed to fetch", 2026-09-21, Mermaid
+     * agent - the server had finished fine). Streaming means the server sends
+     * a {"type":"status"} line as each step starts (inference_server.cpp's
+     * named-agent loop), so bytes keep flowing and the caller can show live
+     * progress. Chunk shapes handled: {"type":"status","message"}, {"type":
+     * "token","token"} (accumulated), a final {"response":...}, {"error":...};
+     * anything else is ignored.
+     *
+     * @param {string} agentName
+     * @param {string} userInput
+     * @param {object} [opts]
+     * @param {(message: string) => void} [opts.onStatus] - called with each progress line
+     * @param {AbortSignal} [opts.signal]
      */
-    async function runAgent(agentName, userInput) {
+    async function runAgent(agentName, userInput, opts = {}) {
+        const { onStatus, signal } = opts;
         const { apiKey, userId } = await resolveCredentials();
         const prompt = userInput ? `@${agentName} ${userInput}` : `@${agentName} `;
         const url = `${apiBase()}/chat`;
@@ -143,20 +174,74 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'omit',
+            signal,
             body: JSON.stringify({
                 prompt,
                 session_id: sessionId(),
                 user_id: userId,
                 user_email: '',
-                stream: false,
+                stream: true,
                 api_key: apiKey,
                 temperature: 0.7,
                 max_tokens: 4096,
                 use_rag: false,
             }),
         });
-        const data = await jsonOrThrow(res, 'chat');
-        return data.response || data.text || '';
+        if (!res.ok) {
+            const errorBody = await res.json().catch(() => ({}));
+            throw new Error(errorBody.error || `HTTP ${res.status} on chat`);
+        }
+
+        let accumulated = '';   // token chunks, if the server streams the answer that way
+        let finalText = null;   // a complete {"response": ...} chunk wins over tokens
+
+        const handleLine = (line) => {
+            if (!line.trim()) return;
+            let chunk;
+            try {
+                chunk = JSON.parse(line);
+            } catch (e) {
+                return; // partial/garbled line - ignore
+            }
+            if (chunk.error) {
+                throw new Error(chunk.error);
+            }
+            if (chunk.type === 'status') {
+                if (onStatus && chunk.message) onStatus(String(chunk.message));
+            } else if (chunk.type === 'token') {
+                accumulated += chunk.token || '';
+            } else if (chunk.response !== undefined) {
+                finalText = chunk.response;
+            }
+        };
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+                for (const line of lines) handleLine(line);
+            }
+            buffer += decoder.decode();
+            if (buffer.trim()) handleLine(buffer);
+        } catch (err) {
+            if (err instanceof TypeError) {
+                // The connection broke AFTER the request was accepted - fetch()
+                // itself succeeded, so wrapEndpointFetch never saw this.
+                throw new Error(
+                    `The connection was interrupted while the agent was running (${err.message}). ` +
+                    `The agent may have finished on the server - please run it again.`
+                );
+            }
+            throw err;
+        }
+
+        return finalText !== null ? finalText : accumulated;
     }
 
     BoudicaCode.AgentApi = { listAgents, saveAgent, deleteAgent, runAgent };
