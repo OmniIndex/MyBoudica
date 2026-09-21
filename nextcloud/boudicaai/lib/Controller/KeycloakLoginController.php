@@ -78,6 +78,11 @@ class KeycloakLoginController extends Controller {
     // every real login attempt here (exchangeCodeForToken()/fetchUserinfo()
     // both 404, Guzzle throws, caught and surfaced as a generic "could not
     // reach the identity server" error with no hint of the real cause).
+    // Default only: a deployment whose Keycloak does NOT use a relative path
+    // (e.g. the boudica_slm dev box's own Keycloak container, which serves at
+    // the root) overrides it with the `keycloak_internal_url` app setting -
+    // see keycloakInternalUrl(). Unset/empty keeps this default, so
+    // production behaviour is unchanged.
     private const KEYCLOAK_INTERNAL_URL = 'http://keycloak:8080/kc';
     private const PROVISION_CHECK_URL = 'http://web:80/cgi-bin/provision_check';
 
@@ -247,7 +252,7 @@ class KeycloakLoginController extends Controller {
     private function exchangeCodeForToken(string $code, string $verifier): ?array {
         $realm = $this->config->getAppValue('boudicaai', 'keycloak_realm', 'boudica');
         $clientId = $this->config->getAppValue('boudicaai', 'keycloak_client_id', 'boudica-nextcloud');
-        $tokenUrl = self::KEYCLOAK_INTERNAL_URL . '/realms/' . rawurlencode($realm) . '/protocol/openid-connect/token';
+        $tokenUrl = $this->keycloakInternalUrl() . '/realms/' . rawurlencode($realm) . '/protocol/openid-connect/token';
 
         try {
             $response = $this->httpClient->post($tokenUrl, [
@@ -300,7 +305,7 @@ class KeycloakLoginController extends Controller {
      */
     private function fetchUserinfo(string $accessToken): ?array {
         $realm = $this->config->getAppValue('boudicaai', 'keycloak_realm', 'boudica');
-        $userinfoUrl = self::KEYCLOAK_INTERNAL_URL . '/realms/' . rawurlencode($realm) . '/protocol/openid-connect/userinfo';
+        $userinfoUrl = $this->keycloakInternalUrl() . '/realms/' . rawurlencode($realm) . '/protocol/openid-connect/userinfo';
 
         try {
             $response = $this->httpClient->get($userinfoUrl, [
@@ -326,6 +331,17 @@ class KeycloakLoginController extends Controller {
         $user->setDisplayName($displayName);
         $user->setEMailAddress($uid);
         return $user;
+    }
+
+    /**
+     * Base URL of Keycloak for the server-side (container-to-container) calls:
+     * the `keycloak_internal_url` app setting when set (no trailing slash),
+     * else the /kc default above. Without this, a Keycloak served at the root
+     * returned 404 for every token exchange and no user could sign in.
+     */
+    private function keycloakInternalUrl(): string {
+        $configured = rtrim(trim($this->config->getAppValue('boudicaai', 'keycloak_internal_url', '')), '/');
+        return $configured !== '' ? $configured : self::KEYCLOAK_INTERNAL_URL;
     }
 
     /**
