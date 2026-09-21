@@ -609,6 +609,53 @@
             background: #a0aec0;
         }
 
+        .boudica-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 10px;
+            white-space: normal;
+        }
+
+        .boudica-action-btn {
+            border: 1px solid ${config.accentColor};
+            background: white;
+            color: ${config.accentColor};
+            border-radius: 14px;
+            padding: 4px 10px;
+            font-size: 12px;
+            line-height: 1.3;
+            cursor: pointer;
+        }
+
+        .boudica-action-btn:hover:not(:disabled) {
+            background: ${config.accentColor};
+            color: white;
+        }
+
+        .boudica-action-btn:disabled {
+            opacity: 0.6;
+            cursor: default;
+        }
+
+        .boudica-image-preview {
+            margin-top: 10px;
+            white-space: normal;
+        }
+
+        .boudica-image-preview img {
+            display: block;
+            max-width: 100%;
+            border-radius: 8px;
+            border: 1px solid #ddd;
+            background: #fff;
+        }
+
+        .boudica-image-note {
+            color: #666;
+            font-style: italic;
+        }
+
         .boudica-error {
             background: #fee;
             color: #c33;
@@ -1085,9 +1132,16 @@
                         responseText = responseText.slice(responseText.toLocaleLowerCase().indexOf("final translation:") + 16);
                     }
                     responsearray.push(responseText);
-                    if (shouldUpdateDocument) {
+                    // An image / SVG answer must never be written over the document
+                    // (e.g. "create an image for my presentation" matches the
+                    // create-a-document pattern): show it as a preview instead.
+                    const isImageAnswer = !!(extractGeneratedImage(responseText) || extractSvg(responseText));
+                    if (shouldUpdateDocument && !isImageAnswer) {
                         commitDocumentContent(responseText);
+                    } else if (shouldUpdateDocument) {
+                        updateStreamingBubble(assistantBubble, responseText);   // replace the "Composing document\u2026" text
                     }
+                    decorateResponse(assistantBubble, responseText, { committed: shouldUpdateDocument && !isImageAnswer });
                     clearQueuedFiles();
                     setProcessing(false);
                     elements.input.focus();
@@ -1190,7 +1244,15 @@
                     // This is the ONLY write to the editor for this response --
                     // see commitDocumentContent()'s comment for why streaming
                     // writes were removed entirely rather than throttled.
-                    commitDocumentContent(responseText);
+                    // Except an image / SVG answer, which must never replace the
+                    // whole document: show a preview with an Insert button instead.
+                    if (extractGeneratedImage(responseText) || extractSvg(responseText)) {
+                        updateStreamingBubble(assistantBubble, responseText);   // replace the "Composing document\u2026" text
+                        decorateResponse(assistantBubble, responseText);
+                    } else {
+                        commitDocumentContent(responseText);
+                        decorateResponse(assistantBubble, responseText, { committed: true });
+                    }
                     clearQueuedFiles();
                     setProcessing(false);
                     elements.input.focus();                 
@@ -1252,6 +1314,7 @@
                             if ( insertResponse ) {
                                 insertTextAtCursor(responseText);
                             }
+                            decorateResponse(assistantBubble, responseText);
                             clearQueuedFiles();                   
                         }
                     } else {
@@ -1282,6 +1345,7 @@
                         if ( insertResponse ) {
                             insertTextAtCursor(responseText);
                         }
+                        decorateResponse(assistantBubble, responseText);
                         clearQueuedFiles();
                     }
                 }
@@ -1298,6 +1362,7 @@
                     if ( insertResponse ) {
                         insertTextAtCursor(responseText);
                     }
+                    decorateResponse(assistantBubble, responseText);
                     clearQueuedFiles();  // Clear queued files after sending
                 }
             } catch (error) {
@@ -1359,6 +1424,110 @@
             } else {
                 contentDiv.innerHTML = renderMarkdown(text);
                 elements.messages.scrollTop = elements.messages.scrollHeight;
+            }
+        }
+
+        // ---- Response actions (placement buttons) and image previews ----------
+
+        function makeActionButton(label, onClick) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'boudica-action-btn';
+            btn.textContent = label;
+            // Keep focus where it is so the editor's cursor/selection is untouched.
+            btn.addEventListener('mousedown', (e) => e.preventDefault());
+            btn.addEventListener('click', async () => {
+                if (btn.disabled) return;
+                btn.disabled = true;
+                const original = btn.textContent;
+                try {
+                    await onClick();
+                    btn.textContent = '\u2713 Done';
+                } catch (err) {
+                    console.error('[Boudica] action failed:', err);
+                    btn.textContent = 'Failed';
+                    addErrorMessage(err && err.message ? err.message : 'That action failed.');
+                }
+                setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2000);
+            });
+            return btn;
+        }
+
+        function attachTextActions(contentDiv, text) {
+            const placements = supportedPlacements(currentDocType());
+            const bar = document.createElement('div');
+            bar.className = 'boudica-actions';
+            bar.appendChild(makeActionButton('Insert at cursor', () => {
+                requireEditable();
+                insertTextAtCursor(text);
+            }));
+            if (placements.includes('cursor')) {
+                bar.appendChild(makeActionButton('New paragraph', () => insertAsNewParagraph(text, 'cursor')));
+            }
+            if (placements.includes('end')) {
+                bar.appendChild(makeActionButton('Append to end', () => insertAsNewParagraph(text, 'end')));
+            }
+            contentDiv.appendChild(bar);
+        }
+
+        function renderImagePreview(holder, src, alt, actions) {
+            holder.textContent = '';
+            const img = document.createElement('img');
+            img.src = src;
+            img.alt = alt || 'Generated image';
+            holder.appendChild(img);
+            const bar = document.createElement('div');
+            bar.className = 'boudica-actions';
+            actions.forEach(([label, run]) => bar.appendChild(makeActionButton(label, run)));
+            holder.appendChild(bar);
+        }
+
+        async function attachGeneratedImagePreview(contentDiv, generated) {
+            const holder = document.createElement('div');
+            holder.className = 'boudica-image-preview';
+            holder.textContent = 'Loading image preview\u2026';
+            contentDiv.appendChild(holder);
+            try {
+                const { blob, dataUrl } = await fetchGeneratedImage(generated.url);
+                renderImagePreview(holder, dataUrl, generated.alt, [
+                    ['Insert image into document', () => insertImageBlob(blob, safeFileName(generated.alt, 'png'))],
+                ]);
+                contentDiv.querySelectorAll('.boudica-image-note').forEach(n => n.remove());
+            } catch (err) {
+                holder.textContent = `Could not load the image preview: ${err.message}`;
+            }
+        }
+
+        function attachSvgPreview(contentDiv, svgText) {
+            const svg = sanitizeSvg(svgText);
+            if (!svg) return;   // not valid SVG: leave the plain text answer alone
+            const holder = document.createElement('div');
+            holder.className = 'boudica-image-preview';
+            renderImagePreview(holder, svgToDataUrl(svg), 'SVG drawing', [
+                ['Insert image (SVG)', () => insertImageBlob(new Blob([svg], { type: 'image/svg+xml' }), 'drawing.svg')],
+                ['Insert as PNG', async () => insertImageBlob(await svgToPngBlob(svg), 'drawing.png')],
+            ]);
+            contentDiv.appendChild(holder);
+        }
+
+        /**
+         * Add the action buttons / image preview to a finished assistant answer.
+         * options.committed: the answer was already written into the document
+         * (the "create a document" path), so text placement buttons are skipped.
+         */
+        function decorateResponse(messageDiv, responseText, options = {}) {
+            try {
+                const contentDiv = messageDiv && messageDiv.querySelector('.boudica-message-content');
+                if (!contentDiv || !responseText || !responseText.trim()) return;
+                const generated = extractGeneratedImage(responseText);
+                const svg = generated ? null : extractSvg(responseText);
+                if (generated) attachGeneratedImagePreview(contentDiv, generated);
+                else if (svg) attachSvgPreview(contentDiv, svg);
+                // Placement buttons make no sense for an image answer or raw SVG source.
+                if (!generated && !svg && !options.committed) attachTextActions(contentDiv, responseText);
+                elements.messages.scrollTop = elements.messages.scrollHeight;
+            } catch (err) {
+                console.warn('[Boudica] could not add response actions:', err);
             }
         }
 
@@ -1680,9 +1849,242 @@
      * @param {string} text - The text to insert at the current cursor position.
      */
     function insertTextAtCursor(text) {
+        pasteMarkdown(text);
+        app.map.fire("editorgotfocus");
+        app.map.focus();
+    }
+
+    /** Paste markdown at the editor's cursor. Replaces the selection if there is one; inline, not a new paragraph. */
+    function pasteMarkdown(text) {
         const header = "paste mimetype=text/markdown;charset=utf-8\n";
         app.socket.sendMessage(new Blob([header, text]));
+    }
+
+    // ------------------------------------------------------------------
+    // Structured insertion: new paragraphs and images.
+    //
+    // Everything here uses Collabora's own internals (app.map / app.socket /
+    // app._docLayer), exactly as the rest of this widget already does, and was
+    // written against the JS bundle of the deployed Collabora (26.04.3.2).
+    // NOT yet exercised in a live editor - see the phase-0 spike notes in the
+    // project memory. Behaviour that still needs a live check: SVG import,
+    // inserted-image sizing, where a paragraph split lands mid-paragraph, and
+    // Impress (presentation) semantics. Those knobs are all collected in this
+    // block so they can be tuned without touching the UI code.
+    // ------------------------------------------------------------------
+
+    /** 'text' (Writer), 'presentation' (Impress), 'spreadsheet' (Calc), 'drawing', or null. */
+    function currentDocType() {
+        try { return app.map.getDocType(); } catch (e) { return null; }
+    }
+
+    function isEditableDocument() {
+        try { return app.map.isEditMode(); } catch (e) { return true; }
+    }
+
+    function requireEditable() {
+        if (!isEditableDocument()) {
+            throw new Error('This document is read-only, so nothing can be inserted.');
+        }
+    }
+
+    // awt key codes, as used by Collabora's own client (UNOKey in its bundle).
+    const UNO_KEY = { END: 1029, RETURN: 1280 };
+
+    /** Send a key press (down + up) to the editor core, like a real keystroke. */
+    function pressKey(unoKey, charCode = 0, modifier = 0) {
+        const layer = app.map._docLayer;
+        layer.postKeyboardEvent('input', charCode, unoKey + modifier);
+        layer.postKeyboardEvent('up', charCode, unoKey + modifier);
+    }
+
+    // Where a response may be placed as a NEW paragraph, per document type.
+    //   cursor = start a new paragraph at the cursor, then paste
+    //   end    = jump to the end of the document, start a new paragraph, paste
+    // Impress has no 'end' yet: "end" there could mean the end of the text box
+    // or a new slide, which is an open design decision.
+    const PARAGRAPH_PLACEMENTS = { text: ['cursor', 'end'], presentation: ['cursor'] };
+
+    function supportedPlacements(docType) {
+        return PARAGRAPH_PLACEMENTS[docType] || [];
+    }
+
+    /**
+     * Insert `text` (markdown) as a new paragraph.
+     * @param {string} text
+     * @param {'cursor'|'end'} where
+     */
+    function insertAsNewParagraph(text, where) {
+        if (!supportedPlacements(currentDocType()).includes(where)) {
+            throw new Error('That placement is not available for this kind of document.');
+        }
+        requireEditable();
+        if (where === 'end') {
+            pressKey(UNO_KEY.END, 0, app.UNOModifier.CTRL);   // Ctrl+End
+        }
+        pressKey(UNO_KEY.RETURN, 13);                         // Enter: start the new paragraph
+        pasteMarkdown(text);
         app.map.fire("editorgotfocus");
+        app.map.focus();
+    }
+
+    // ---- images ----
+
+    // The image-generator app answers with ONE markdown line whose URL is a
+    // relative /generated/<id>.png (see apps/image-generator in boudica_slm).
+    const GENERATED_IMAGE_RE = /!\[([^\]]*)\]\((\/generated\/[0-9a-f]{32}\.png)\)/;
+    const IMAGE_MAX_BYTES = 15 * 1024 * 1024;
+    // 0 = insert the original bytes. Set (e.g. 800) to downscale wider rasters
+    // before inserting - the sidecar makes 1024px PNGs, which may land larger
+    // than the page's text width; decide after the live sizing check.
+    const IMAGE_INSERT_MAX_PX = 0;
+
+    function extractGeneratedImage(text) {
+        const m = GENERATED_IMAGE_RE.exec(text || '');
+        return m ? { alt: m[1], url: m[2] } : null;
+    }
+
+    function extractSvg(text) {
+        const m = /<svg[\s\S]*?<\/svg>/i.exec(text || '');
+        return m ? m[0] : null;
+    }
+
+    function safeFileName(label, ext) {
+        const base = (label || 'image').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'image';
+        return base + '.' + ext;
+    }
+
+    function blobToDataUrl(blob) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(blob);
+        });
+    }
+
+    /**
+     * Fetch a generated image ONCE and keep the bytes. The server deletes a
+     * generated image ~60 s after its first fetch, so a later "Insert" click
+     * that re-fetched the URL would 404; the preview and the insert both use
+     * this cached copy. Collabora's CSP allows data: images but not blob:, so
+     * the preview is a data: URL.
+     */
+    async function fetchGeneratedImage(url) {
+        let target = url;
+        try { target = new URL(url, new URL(config.apiEndpoint || '/api/boudica', window.location.href).origin).href; } catch (e) { /* keep relative */ }
+        const resp = await fetch(target, { credentials: 'same-origin' });
+        if (!resp.ok) {
+            throw new Error(resp.status === 404
+                ? 'The image is no longer available (generated images are removed shortly after they are viewed).'
+                : `HTTP ${resp.status}`);
+        }
+        const blob = await resp.blob();
+        if (!/^image\//.test(blob.type)) throw new Error('The server did not return an image.');
+        if (blob.size > IMAGE_MAX_BYTES) throw new Error('The image is too large to insert.');
+        return { blob, dataUrl: await blobToDataUrl(blob) };
+    }
+
+    function hasExternalUrl(str) {
+        const re = /url\(\s*['"]?\s*([^'")\s]*)/gi;
+        let m;
+        while ((m = re.exec(str)) !== null) {
+            if (m[1] && !m[1].startsWith('#')) return true;
+        }
+        return /@import/i.test(str);
+    }
+
+    /**
+     * Sanitise model-produced SVG before it is previewed or sent to the server
+     * (which renders it): drop scripts, foreignObject, animation, event
+     * handlers and any reference to something outside the document. Returns a
+     * serialised, sized SVG string, or null if it does not parse.
+     */
+    function sanitizeSvg(svgText) {
+        let doc;
+        try { doc = new DOMParser().parseFromString(svgText, 'image/svg+xml'); } catch (e) { return null; }
+        const root = doc.documentElement;
+        if (!root || root.localName !== 'svg' || doc.getElementsByTagName('parsererror').length) return null;
+
+        root.querySelectorAll('script, foreignObject, iframe, object, embed, audio, video, canvas, animate, animateTransform, animateMotion, set')
+            .forEach(n => n.remove());
+        root.querySelectorAll('style').forEach(st => { if (hasExternalUrl(st.textContent)) st.remove(); });
+        const safeHref = /^(#|data:image\/(png|jpe?g|gif|webp);base64,)/i;
+        [root, ...root.querySelectorAll('*')].forEach(el => {
+            Array.from(el.attributes).forEach(a => {
+                const name = a.name.toLowerCase();
+                const value = a.value.trim();
+                if (name.startsWith('on')) el.removeAttribute(a.name);
+                else if ((name === 'href' || name === 'xlink:href') && !safeHref.test(value)) el.removeAttribute(a.name);
+                else if (hasExternalUrl(value)) el.removeAttribute(a.name);
+            });
+        });
+
+        // The importer needs a concrete size; percentages/missing values give a bad one.
+        const numeric = v => /^[\d.]+(px)?$/.test((v || '').trim());
+        if (!numeric(root.getAttribute('width')) || !numeric(root.getAttribute('height'))) {
+            const vb = (root.getAttribute('viewBox') || '').trim().split(/[\s,]+/).map(Number);
+            const w = vb.length === 4 && vb[2] > 0 ? vb[2] : 800;
+            const h = vb.length === 4 && vb[3] > 0 ? vb[3] : 600;
+            root.setAttribute('width', String(w));
+            root.setAttribute('height', String(h));
+            if (!root.getAttribute('viewBox')) root.setAttribute('viewBox', `0 0 ${w} ${h}`);
+        }
+        if (!root.getAttribute('xmlns')) root.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+        return new XMLSerializer().serializeToString(root);
+    }
+
+    function svgToDataUrl(svgString) {
+        return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString);
+    }
+
+    /** Rasterise SVG to a PNG blob - the fallback if the editor will not import SVG as a graphic. */
+    async function svgToPngBlob(svgString, maxWidth = 1200) {
+        const img = new Image();
+        await new Promise((resolve, reject) => {
+            img.onload = resolve;
+            img.onerror = () => reject(new Error('The SVG could not be rendered.'));
+            img.src = svgToDataUrl(svgString);
+        });
+        const w0 = img.naturalWidth || 800;
+        const h0 = img.naturalHeight || 600;
+        const scale = Math.min(maxWidth / w0, w0 < 600 ? 2 : 1);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(w0 * scale));
+        canvas.height = Math.max(1, Math.round(h0 * scale));
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        return await new Promise((resolve, reject) =>
+            canvas.toBlob(b => (b ? resolve(b) : reject(new Error('Could not convert the image.'))), 'image/png'));
+    }
+
+    async function downscaleRaster(blob, maxPx) {
+        const bitmap = await createImageBitmap(blob);
+        if (bitmap.width <= maxPx) return blob;
+        const scale = maxPx / bitmap.width;
+        const canvas = document.createElement('canvas');
+        canvas.width = maxPx;
+        canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+        canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        return await new Promise(resolve => canvas.toBlob(b => resolve(b || blob), blob.type === 'image/jpeg' ? 'image/jpeg' : 'image/png'));
+    }
+
+    /**
+     * Insert an image at the cursor / on the current slide. The browser uploads
+     * the file to Collabora's own same-origin insertfile endpoint and the
+     * server places it - the file MUST have a name and be non-empty.
+     */
+    async function insertImageBlob(blob, fileName) {
+        requireEditable();
+        let out = blob;
+        if (IMAGE_INSERT_MAX_PX > 0 && /^image\/(png|jpeg)$/.test(blob.type)) {
+            out = await downscaleRaster(blob, IMAGE_INSERT_MAX_PX);
+        }
+        const file = new File([out], fileName, { type: out.type || 'application/octet-stream' });
+        if (typeof app.map.insertGraphic === 'function') {
+            app.map.insertGraphic(file);
+        } else {
+            app.map.fire('insertgraphic', { file });
+        }
         app.map.focus();
     }
 
@@ -1931,6 +2333,12 @@
             if (match.includes('<ul>')) return match;
             return '<ol style="list-style-type: decimal; left: 6px;">' + match + '</ol>';
         });
+
+        // A generated image (markdown image with a /generated/ URL). NOT rendered
+        // as <img>: fetching that URL would start the server's delete-after-first-
+        // view clock and then a second fetch for the preview could 404. The image
+        // is fetched exactly once by decorateResponse(), which shows the preview.
+        html = html.replace(/!\[([^\]]*)\]\(\/generated\/[0-9a-f]{32}\.png\)/g, '<span class="boudica-image-note">\uD83D\uDDBC Generated image</span>');
 
         // Links [text](url)
         html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
