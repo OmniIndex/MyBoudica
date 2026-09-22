@@ -206,11 +206,11 @@
                         ${connected
                             ? `<span class="service-badge connected">Connected</span>
                                <button class="btn-service-disconnect" title="Disconnect ${esc(name)}"
-                                   onclick="window._BoudicaServices.disconnect('${esc(app.service_name)}')">
+                                   data-action="disconnect" data-service="${esc(app.service_name)}">
                                    Disconnect
                                </button>`
                             : `<button class="btn-service-connect" title="Connect ${esc(name)}"
-                                   onclick="window._BoudicaServices.connect('${esc(app.service_name)}')">
+                                   data-action="connect" data-service="${esc(app.service_name)}">
                                    Connect
                                </button>`
                         }
@@ -325,6 +325,22 @@
         const refreshBtn = document.getElementById('servicesRefreshBtn');
         if (refreshBtn) refreshBtn.addEventListener('click', loadServices);
         console.info('servicesRefreshBtn: hooked in...');
+
+        // Connect/Disconnect buttons are rendered dynamically (renderServices)
+        // with data-action/data-service attributes rather than inline onclick=
+        // handlers, since Nextcloud's CSP (script-src 'nonce-...') blocks
+        // inline event-handler attributes outright - nonces don't cover those.
+        // Delegate from the static list container instead.
+        const servicesList = document.getElementById('servicesList');
+        if (servicesList) {
+            servicesList.addEventListener('click', (e) => {
+                const btn = e.target.closest('[data-action]');
+                if (!btn) return;
+                const service = btn.getAttribute('data-service');
+                if (btn.getAttribute('data-action') === 'connect') connect(service);
+                else if (btn.getAttribute('data-action') === 'disconnect') disconnect(service);
+            });
+        }
 
         // Click backdrop to close
         const overlay = document.getElementById('servicesOverlay');

@@ -26,7 +26,10 @@ use OCP\Util;
 // it would not have caught this either.
 if (!empty($_['boudica_provisioned_key'])) {
     print_unescaped(
-        '<script nonce="' . \OCP\Util::sanitizeHTML($_['cspNonce']) . '">(function(){try{if(!localStorage.getItem("boudica_session")){localStorage.setItem("boudica_session",'
+        '<script nonce="' . \OCP\Util::sanitizeHTML($_['cspNonce']) . '">(function(){try{'
+        . 'var existing=null;try{existing=JSON.parse(localStorage.getItem("boudica_session")||"null");}catch(e){}'
+        . 'var provisionedEmail=' . json_encode($_['boudica_provisioned_email'], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ';'
+        . 'if(!existing||existing.email!==provisionedEmail){localStorage.setItem("boudica_session",'
         . json_encode(json_encode([
             'token' => $_['boudica_provisioned_key'],
             'email' => $_['boudica_provisioned_email'],
@@ -68,6 +71,20 @@ Util::addScript(OCA\BoudicaAi\AppInfo\Application::APP_ID, 'document-handler');
 // copy of the same dompurify@3.1.6 UMD build referenced there. Must load
 // before chat-ui.
 Util::addScript(OCA\BoudicaAi\AppInfo\Application::APP_ID, 'vendor/purify.min');
+// Vendored marked (markdown-to-HTML rendering - chat-ui.js's formatMessage()
+// calls marked.parse() when `typeof marked !== 'undefined'`, else falls back
+// to basicMarkdownFormat(), which only handles bold/italic/code, not
+// headings, lists, links, or images). This script tag was missing from the
+// original port (chat-ui.js/chat-api.js/app.js were copied over, but the
+// standalone product's own CDN <script> for marked - same CSP restriction as
+// DOMPurify above - was never replaced with a local copy) - confirmed live
+// 2026-09-22 that this silently degraded every response to the fallback
+// path the whole time: bold/italic rendered, but a FLUX-generated image's
+// markdown (`![alt](/generated/<hash>.png)`), and any heading/list/link
+// syntax, showed as literal raw text instead of real HTML. Same
+// marked@11.1.1 UMD build boudica_slm's own chat_interface/index.html loads
+// from the CDN. Must load before chat-ui, same reasoning as DOMPurify.
+Util::addScript(OCA\BoudicaAi\AppInfo\Application::APP_ID, 'vendor/marked.min');
 Util::addScript(OCA\BoudicaAi\AppInfo\Application::APP_ID, 'chat-ui');
 Util::addScript(OCA\BoudicaAi\AppInfo\Application::APP_ID, 'chat-api');
 Util::addScript(OCA\BoudicaAi\AppInfo\Application::APP_ID, 'voice-input');
