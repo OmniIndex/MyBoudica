@@ -31,7 +31,10 @@ print_unescaped('<script' . $_cspNonceAttr . '>window.BOUDICA_API_BASE = ' . jso
 // who hasn't logged in through "Sign in with Boudica" yet.
 if (!empty($_['boudica_provisioned_key'])) {
     print_unescaped(
-        '<script' . $_cspNonceAttr . '>(function(){try{if(!localStorage.getItem("boudica_session")){localStorage.setItem("boudica_session",'
+        '<script' . $_cspNonceAttr . '>(function(){try{'
+        . 'var existing=null;try{existing=JSON.parse(localStorage.getItem("boudica_session")||"null");}catch(e){}'
+        . 'var provisionedEmail=' . json_encode($_['boudica_provisioned_email'], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ';'
+        . 'if(!existing||existing.email!==provisionedEmail){localStorage.setItem("boudica_session",'
         . json_encode(json_encode([
             'token' => $_['boudica_provisioned_key'],
             'email' => $_['boudica_provisioned_email'],

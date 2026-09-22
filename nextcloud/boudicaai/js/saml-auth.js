@@ -86,7 +86,25 @@ class SAMLAuthenticator {
             // required".
             let email = session.email || (session.user && session.user.email) || '';
 
-            if (!session.token || !email) {
+            // Defense-in-depth against a stale cross-user session:
+            // boudica_session is a single, non-namespaced localStorage key
+            // shared by the whole browser origin, so a previous Nextcloud
+            // login (a different account in the same browser) can leave
+            // behind a token for someone else. The PHP pre-seed script now
+            // guards against this on a fresh page load, but this check also
+            // covers the SPA case where checkExistingSession() re-runs
+            // without a full reload. Confirmed live 2026-09-17:
+            // sibain@omniindex.io was served sibain@tendotzero.com's stale
+            // session/identity this way.
+            const currentUid = (window.OC && typeof OC.getCurrentUser === 'function' && OC.getCurrentUser() && OC.getCurrentUser().uid) || null;
+            if (currentUid && email && currentUid !== email) {
+                console.warn('[SAMLAuth] Stored session belongs to a different user than the logged-in Nextcloud account - clearing stale session');
+                localStorage.removeItem('boudica_session');
+                sessionData = null;
+                email = '';
+            }
+
+            if (!sessionData || !session.token || !email) {
                 console.warn('[SAMLAuth] Existing session is missing token or user info, clearing it');
                 await this.signup();
                 sessionData = localStorage.getItem('boudica_session');
