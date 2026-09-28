@@ -2826,10 +2826,30 @@ body.dark-mode .agent-tile:hover {
 
 /* Input locked during response streaming */
 .chat-input-wrapper--waiting {
-    opacity: 0.55;
     background-color: var(--border-color) !important;
-    pointer-events: none;
     cursor: not-allowed;
+}
+
+/* Everything in the box is greyed out and unclickable while an answer is on
+   its way - except the send button, which is the Stop button then
+   (ChatUI.setStopMode). Greying the whole box (opacity + pointer-events on the
+   wrapper) made Stop unclickable for a real mouse. */
+.chat-input-wrapper--waiting :is(textarea, input, label, select, a, button:not(.btn-stop)) {
+    opacity: 0.55;
+    pointer-events: none;
+}
+
+.chat-input-wrapper--waiting .btn-stop,
+.btn-send.btn-stop {
+    pointer-events: auto;
+    opacity: 1;
+    cursor: pointer;
+    background-color: var(--error-color, #d9534f);
+    color: #fff;
+}
+
+.btn-send.btn-stop:hover {
+    filter: brightness(0.9);
 }
 
 .chat-input-wrapper--waiting:focus-within {

@@ -418,10 +418,10 @@ class ChatUI {
      * Display a message in the chat
      */
     /**
-     * Waiting words: from the moment a prompt is sent until the first answer
-     * text arrives, show WAITING_WORDS in order, one every 5 s, staying on the
-     * last. Shown in the typing placeholder first, then in the answer bubble
-     * once the server has replied (through the queue and thinking stages).
+     * Waiting words: from the moment a prompt is sent until the server's
+     * first reply line arrives, show WAITING_WORDS in the typing placeholder,
+     * one every 5 s, staying on the last. They are removed as soon as the
+     * server responds, leaving its status, thinking or answer on its own.
      */
     startWaitingWords() {
         this.stopWaitingWords();
@@ -619,8 +619,10 @@ class ChatUI {
         }
         
         this.chatMessages.appendChild(messageDiv);
-        if (message.role === 'assistant' && !isTyping && !message.content) {
-            this._renderWaitingWord();
+        // The answer bubble is created on the server's first reply line: the
+        // waiting words give way to whatever it sends (status, thinking, text).
+        if (message.role === 'assistant' && !isTyping) {
+            this.stopWaitingWords();
         }
 
         // If this is an HTML assistant message, attach a View HTML button to
