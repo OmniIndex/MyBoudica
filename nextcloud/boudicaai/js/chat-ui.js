@@ -3,6 +3,21 @@
  * Handles all UI interactions and updates
  */
 
+// Shown in order, 5 s each, while waiting for the first answer text
+// (startWaitingWords()); the last one stays until the answer starts.
+const WAITING_WORDS = [
+    { word: 'Cadgdoodling',       meaning: 'Working out what I need to do' },
+    { word: 'Blowinfussnoodling', meaning: 'Taking the prompt and passing it to the AI' },
+    { word: 'Spellcheckling',     meaning: 'Seeing if the AI can understand the typing' },
+    { word: 'Intentnifying',      meaning: 'Looking to see what it is the user wants to do' },
+    { word: 'Gatheringupling',    meaning: 'Bringing all of the data together and working through it' },
+    { word: 'Concludadeling',     meaning: 'Starting to infer' },
+];
+const WAITING_WORDS_HTML =
+    '<div class="waiting-word" style="font-size: var(--font-size-sm); color: var(--text-secondary); ' +
+    'font-style: italic; padding: 2px 0; animation: agentic-status-pulse 1.6s ease-in-out infinite;"></div>' +
+    '<div class="waiting-word-meaning" style="font-size: var(--font-size-xs, 0.75rem); color: var(--text-tertiary);"></div>';
+
 class ChatUI {
     constructor(storage, api) {
         this.storage = storage;
@@ -122,7 +137,14 @@ class ChatUI {
         this.chatInput.addEventListener('keydown', (e) => this.handleKeyDown(e));
         
         // Button events
-        this.sendBtn.addEventListener('click', () => this.handleSendMessage());
+        // While an answer is streaming the send button is a Stop button (lockInput()).
+        this.sendBtn.addEventListener('click', () => {
+            if (this._stopMode) {
+                if (this.onStopRequested) this.onStopRequested();
+            } else {
+                this.handleSendMessage();
+            }
+        });
         this.newChatBtn.addEventListener('click', () => this.handleNewChat());
         this.historySearch.addEventListener('input', (e) => this.handleSearchHistory(e));
 
@@ -272,8 +294,8 @@ class ChatUI {
         // Update character count
         this.charCount.textContent = `${length} / 4000`;
         
-        // Enable/disable send button
-        this.sendBtn.disabled = length === 0 || length > 4000;
+        // Enable/disable send button (left alone while it is the Stop button)
+        if (!this._stopMode) this.sendBtn.disabled = length === 0 || length > 4000;
         
         // Update char count color if approaching limit
         if (length > 3800) {
@@ -336,7 +358,7 @@ class ChatUI {
         // Send on Enter (without Shift)
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            if (!this.sendBtn.disabled) {
+            if (!this.sendBtn.disabled && !this._stopMode) {
                 this.handleSendMessage();
             }
         }
@@ -395,6 +417,62 @@ class ChatUI {
     /**
      * Display a message in the chat
      */
+    /**
+     * Waiting words: from the moment a prompt is sent until the first answer
+     * text arrives, show WAITING_WORDS in order, one every 5 s, staying on the
+     * last. Shown in the typing placeholder first, then in the answer bubble
+     * once the server has replied (through the queue and thinking stages).
+     */
+    startWaitingWords() {
+        this.stopWaitingWords();
+        this._waitingActive = true;
+        this._waitingIdx = 0;
+        this._waitingTimer = setInterval(() => {
+            if (this._waitingIdx >= WAITING_WORDS.length - 1) {
+                clearInterval(this._waitingTimer);
+                this._waitingTimer = null;
+                return;
+            }
+            this._waitingIdx++;
+            this._renderWaitingWord();
+        }, 5000);
+    }
+
+    /** Remove the waiting words once real answer text (or the end) arrives. */
+    stopWaitingWords() {
+        if (this._waitingTimer) clearInterval(this._waitingTimer);
+        this._waitingTimer = null;
+        this._waitingActive = false;
+        if (this.chatMessages) {
+            this.chatMessages.querySelectorAll('.message:not(.typing) .waiting-words')
+                .forEach(el => el.remove());
+        }
+    }
+
+    /**
+     * Show the current waiting word in `container`, or else in the latest
+     * assistant message (added at its top if it has none yet).
+     */
+    _renderWaitingWord(container = null) {
+        if (!this._waitingActive) return;
+        let box = container;
+        if (!box) {
+            const msgs = this.chatMessages.querySelectorAll('.message.assistant');
+            const last = msgs[msgs.length - 1];
+            if (!last) return;
+            box = last.querySelector('.waiting-words');
+            if (!box) {
+                box = document.createElement('div');
+                box.className = 'waiting-words';
+                box.innerHTML = WAITING_WORDS_HTML;
+                last.insertBefore(box, last.firstChild);
+            }
+        }
+        const item = WAITING_WORDS[this._waitingIdx] || WAITING_WORDS[WAITING_WORDS.length - 1];
+        box.querySelector('.waiting-word').textContent = item.word + '…';
+        box.querySelector('.waiting-word-meaning').textContent = item.meaning;
+    }
+
     displayMessage(message, isTyping = false) {
         const messageDiv = document.createElement('div');
         messageDiv.classList.add('message', message.role);
@@ -413,18 +491,13 @@ class ChatUI {
         
         if (isTyping) {
             messageDiv.classList.add('typing');
-            // Bouncing-dot placeholder shown from the moment the prompt is sent
-            // until the first stream chunk arrives (removeTypingIndicator() in
-            // app.js's stream callback) - without this the response bubble is
-            // just an empty box for however long prefill/retrieval takes before
-            // the first token, which reads as a hang rather than "working".
-            contentDiv.innerHTML = `
-                <div class="typing-indicator">
-                    <span class="typing-dot"></span>
-                    <span class="typing-dot"></span>
-                    <span class="typing-dot"></span>
-                </div>
-            `;
+            // Placeholder shown from the moment the prompt is sent until the
+            // first stream chunk arrives (removeTypingIndicator() in app.js's
+            // stream callback) - without it the response bubble is an empty box
+            // for however long it takes to reach the server, which reads as a
+            // hang. Shows the current waiting word (startWaitingWords()).
+            contentDiv.innerHTML = `<div class="waiting-words">${WAITING_WORDS_HTML}</div>`;
+            this._renderWaitingWord(contentDiv.querySelector('.waiting-words'));
         } else {
             const formattedData = this.formatMessageContent(message.content);
             if (formattedData.type === 'html') {
@@ -544,6 +617,9 @@ class ChatUI {
         }
         
         this.chatMessages.appendChild(messageDiv);
+        if (message.role === 'assistant' && !isTyping && !message.content) {
+            this._renderWaitingWord();
+        }
 
         // If this is an HTML assistant message, attach a View HTML button to
         // the preceding user bubble so each prompt can re-open its own response
@@ -2363,6 +2439,7 @@ class ChatUI {
         
         // Lock input and start the gold race line — prompt is now sent to the server
         this.lockInput();
+        this.startWaitingWords();
         this.startRaceLine();
         
         const typingMessage = {
@@ -2409,7 +2486,32 @@ class ChatUI {
             this.chatInput.readOnly = true;
             this.chatInput.setAttribute('placeholder', 'Waiting for response…');
         }
-        if (this.sendBtn) this.sendBtn.disabled = true;
+        this.setStopMode(true);
+    }
+
+    /**
+     * Turn the send button into a Stop button while an answer is on its way,
+     * and back again.
+     */
+    setStopMode(on) {
+        if (!this.sendBtn || this._stopMode === on) return;
+        this._stopMode = on;
+        if (on) {
+            this._sendBtnHtml = this.sendBtn.innerHTML;
+            this._sendBtnTitle = this.sendBtn.getAttribute('title');
+            this.sendBtn.innerHTML =
+                '<svg width="20" height="20" viewBox="0 0 20 20" fill="none">' +
+                '<rect x="5" y="5" width="10" height="10" rx="1.5" fill="currentColor"/></svg>';
+            this.sendBtn.setAttribute('title', 'Stop');
+            this.sendBtn.setAttribute('aria-label', 'Stop the answer');
+            this.sendBtn.classList.add('btn-stop');
+            this.sendBtn.disabled = false;
+        } else {
+            this.sendBtn.innerHTML = this._sendBtnHtml;
+            this.sendBtn.setAttribute('title', this._sendBtnTitle || 'Send message');
+            this.sendBtn.setAttribute('aria-label', 'Send message');
+            this.sendBtn.classList.remove('btn-stop');
+        }
     }
 
     /**
@@ -2422,6 +2524,7 @@ class ChatUI {
             this.chatInput.readOnly = false;
             this.chatInput.setAttribute('placeholder', 'Send a message to Boudica...');
         }
+        this.setStopMode(false);
         // Re-evaluate send button state based on current content
         this.handleInputChange();
     }
@@ -2520,6 +2623,7 @@ class ChatUI {
             }
         }
         // Ensure race line is stopped and input re-enabled
+        this.stopWaitingWords();
         this.stopRaceLine();
         this.unlockInput();
     }
@@ -2531,6 +2635,9 @@ class ChatUI {
      * @param {boolean} isDone  - true when the stream is finished
      */
     updateAssistantMessage(messageId, content, isDone = false, thinking = null) {
+        if (this._waitingActive && (isDone || (content && content.trim()))) {
+            this.stopWaitingWords();
+        }
         if (!isDone) {
             // Throttle: store the latest content and schedule one DOM update per
             // animation frame.  If a frame is already scheduled for this message,

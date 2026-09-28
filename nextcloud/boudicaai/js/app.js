@@ -123,6 +123,7 @@ async function initializeApp() {
         
         // Set up UI callback for sending messages
         app.ui.onSendMessage = handleSendMessage;
+        app.ui.onStopRequested = () => app.api.abortActiveRequest();
         
         // Set up logout button
         const logoutBtn = document.getElementById('logoutBtn');

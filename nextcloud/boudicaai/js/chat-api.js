@@ -603,6 +603,16 @@ class ChatAPI {
             console.error('Dashboard open failed:', err);
         }
     }
+    /**
+     * Stop the answer that is streaming now, if any (the chat's Stop button).
+     * @returns {boolean} true if there was one to stop
+     */
+    abortActiveRequest() {
+        if (!this._activeStream) return false;
+        this._activeStream.abort();
+        return true;
+    }
+
     async handleStreamingResponse(url, requestBody, onStream, isMultipart = false) {
         const fetchOptions = {
             method: 'POST'
@@ -620,10 +630,30 @@ class ChatAPI {
             };
             fetchOptions.body = JSON.stringify(requestBody);
         }
-        
-        const response = await fetch(url, fetchOptions);
+
+        // Stop button (abortActiveRequest): aborting closes the connection, and the
+        // server stops generating when it sees that. What had arrived is kept.
+        const controller = new AbortController();
+        this._activeStream = controller;
+        fetchOptions.signal = controller.signal;
+        const stoppedNote = '\n\n*(Stopped before the answer was finished.)*';
+        const notAnsweredNote = '*(Stopped before Boudica could answer.)*';
+
+        let response;
+        try {
+            response = await fetch(url, fetchOptions);
+        } catch (error) {
+            if (this._activeStream === controller) this._activeStream = null;
+            if (controller.signal.aborted) {
+                onStream && onStream(notAnsweredNote, true, null, null);
+                return { role: 'assistant', content: notAnsweredNote, stopped: true,
+                         metadata: { tokens: 0, model: 'Boudica' } };
+            }
+            throw error;
+        }
         
         if (!response.ok) {
+            if (this._activeStream === controller) this._activeStream = null;
             const error = await response.json().catch(() => ({ error: 'API request failed' }));
             throw new Error(error.error || 'API request failed');
         }
@@ -678,7 +708,8 @@ class ChatAPI {
                             // than a second, parallel mechanism - whatever real event
                             // comes next (status/thinking_start/token) updates or clears
                             // this same message normally.
-                            onStream(this.stripChannelThought(fullContent), false, null, null, null, 'Got it — working on a response…');
+                            // No status text: the waiting words (ChatUI.startWaitingWords) carry on in the bubble.
+                            onStream(this.stripChannelThought(fullContent), false, null, null, null, null);
                             continue;
                         }
 
@@ -896,8 +927,17 @@ class ChatAPI {
             };
             
         } catch (error) {
+            if (controller.signal.aborted) {
+                const partial = this.stripChannelThought(fullContent);
+                const content = partial.trim() ? partial + stoppedNote : notAnsweredNote;
+                onStream && onStream(content, true, null, thinking || thinkingLive || null);
+                return { role: 'assistant', content: content, stopped: true, thinking: thinking,
+                         metadata: { tokens: tokensGenerated, model: 'Boudica' } };
+            }
             console.error('Streaming error:', error);
             throw error;
+        } finally {
+            if (this._activeStream === controller) this._activeStream = null;
         }
     }
     
