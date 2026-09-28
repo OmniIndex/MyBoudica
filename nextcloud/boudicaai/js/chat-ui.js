@@ -18,6 +18,122 @@ const WAITING_WORDS_HTML =
     'font-style: italic; padding: 2px 0; animation: agentic-status-pulse 1.6s ease-in-out infinite;"></div>' +
     '<div class="waiting-word-meaning" style="font-size: var(--font-size-xs, 0.75rem); color: var(--text-tertiary);"></div>';
 
+// ── AI-generated text marker (EU AI Act Art. 50(2)) ─────────────────────────
+// An invisible signature put into answers as shown and as copied, so text
+// pasted elsewhere can be recognised as Boudica's (/api/boudica/detect; the
+// server side is src/ai_text_mark.hpp and must match): U+2063, 16 bits of
+// 0xB0DA (U+200B = 0, U+2060 = 1), U+2063. Inserted just before a space, so
+// line breaking is unchanged, and never inside code, where it would break
+// copied commands and programs. The stored answer never carries it.
+const AI_TEXT_MARK = (() => {
+    let m = '⁣';
+    for (let b = 15; b >= 0; b--) m += ((0xB0DA >> b) & 1) ? '⁠' : '​';
+    return m + '⁣';
+})();
+const AI_MARK_EVERY = 300;  // characters of prose between markers
+const AI_MARK_SKIP = 'pre, code, kbd, samp, script, style, svg, textarea, .thinking-block, .html-preview-card, .waiting-words';
+const AI_MARK_BLOCKS = 'p, li, h1, h2, h3, h4, h5, h6, td, th, dd, dt, blockquote';
+
+// Positions in a run of prose where a marker may go: before the space after
+// a sentence or clause end, or straight after CJK sentence punctuation.
+function aiMarkSentenceEnds(text) {
+    const at = [];
+    const re = /[.!?;:](?=\s)|[。！？]/g;
+    let m;
+    while ((m = re.exec(text)) !== null) at.push(m.index + 1);
+    return at;
+}
+
+/** Marks the rendered prose of an answer (idempotent per block). */
+function markAiText(root) {
+    if (!root) return;
+    root.querySelectorAll(AI_MARK_BLOCKS).forEach(block => {
+        if (block.closest(AI_MARK_SKIP) || block.dataset.aiMarked) return;
+        block.dataset.aiMarked = '1';
+        // This block's own text: not code, not a nested block (a list inside
+        // a list item is marked on its own).
+        const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, {
+            acceptNode: n => (n.parentElement.closest(AI_MARK_SKIP) ||
+                              n.parentElement.closest(AI_MARK_BLOCKS) !== block)
+                ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+        });
+        const nodes = [];
+        while (walker.nextNode()) nodes.push(walker.currentNode);
+        let since = Infinity, marked = false;
+        for (const node of nodes) {
+            const text = node.nodeValue;
+            let out = '', last = 0;
+            for (const pos of aiMarkSentenceEnds(text)) {
+                if (since + pos - last >= AI_MARK_EVERY || !marked) {
+                    out += text.slice(last, pos) + AI_TEXT_MARK;
+                    since = 0;
+                    last = pos;
+                    marked = true;
+                }
+            }
+            since += text.length - last;
+            if (last > 0) node.nodeValue = out + text.slice(last);
+        }
+        if (marked) return;
+        // No sentence end: before the first space after a word, else at the end.
+        for (const node of nodes) {
+            const i = node.nodeValue.search(/[\p{L}\p{N}](?=\s)/u);
+            if (i >= 0) {
+                node.nodeValue = node.nodeValue.slice(0, i + 1) + AI_TEXT_MARK + node.nodeValue.slice(i + 1);
+                return;
+            }
+        }
+        const lastNode = nodes[nodes.length - 1];
+        if (lastNode && lastNode.nodeValue.trim()) lastNode.nodeValue += AI_TEXT_MARK;
+    });
+}
+
+/**
+ * The raw answer as the Copy button copies it: markdown prose marked, code
+ * (fenced, indented, inline), link targets, URLs and markdown syntax left
+ * untouched. A full HTML document gets a meta tag instead.
+ */
+function markAiMarkdown(text) {
+    if (!text) return text;
+    if (/<html[\s>]/i.test(text)) {
+        const meta = '<meta name="ai-generated" content="Boudica">';
+        if (text.includes(meta)) return text;
+        return /<head[^>]*>/i.test(text) ? text.replace(/<head[^>]*>/i, h => h + meta)
+                                          : text.replace(/<html[^>]*>/i, h => h + meta);
+    }
+    let inFence = false;
+    return text.split('\n').map(line => {
+        if (/^\s*(```|~~~)/.test(line)) { inFence = !inFence; return line; }
+        if (inFence || /^( {4}|\t)/.test(line) || /^\s*</.test(line) ||
+            /^\s*\|?\s*:?-{3,}/.test(line) || line.trim().length < 20) return line;
+        // Skip the list/heading/quote prefix, whose spacing is syntax.
+        const prefix = (line.match(/^(\s*(?:[-*+>]|\d+[.)]|#{1,6})\s+)*/) || [''])[0];
+        // Characters that must not receive a marker: inline code, link
+        // targets, autolinks and bare URLs.
+        const blocked = new Array(line.length).fill(false);
+        const block = re => { let m; while ((m = re.exec(line)) !== null) for (let k = m.index; k < m.index + m[0].length; k++) blocked[k] = true; };
+        block(/`+[^`]*`+/g);
+        block(/\]\([^)]*\)/g);
+        block(/<[^>\s]+>/g);
+        block(/\S*(?::\/\/|www\.)\S*/g);
+        const ok = pos => pos > prefix.length && !blocked[pos - 1] && !blocked[pos];
+        let candidates = aiMarkSentenceEnds(line).filter(ok);
+        if (!candidates.length) {
+            const re = /[\p{L}\p{N}](?=\s)/gu;
+            let m;
+            while ((m = re.exec(line)) !== null) if (ok(m.index + 1)) { candidates = [m.index + 1]; break; }
+        }
+        let out = '', last = 0, since = Infinity;
+        for (const pos of candidates) {
+            if (since + pos - last < AI_MARK_EVERY) continue;
+            out += line.slice(last, pos) + AI_TEXT_MARK;
+            since = 0;
+            last = pos;
+        }
+        return out + line.slice(last);
+    }).join('\n');
+}
+
 class ChatUI {
     constructor(storage, api) {
         this.storage = storage;
@@ -518,6 +634,7 @@ class ChatUI {
                 this.openHtmlPreview(this._ensureHtmlClosingTags(message.content), false);
             } else {
                 contentDiv.innerHTML = formattedData.html;
+                if (message.role === 'assistant') markAiText(contentDiv);
             }
             contentDiv.setAttribute('data-content-type', formattedData.type);
             contentDiv.setAttribute('data-raw-content', message.content);
@@ -1604,7 +1721,8 @@ class ChatUI {
         
         try {
             // Copy the raw content (markdown, HTML, or plain text)
-            await navigator.clipboard.writeText(message.content);
+            await navigator.clipboard.writeText(
+                message.role === 'assistant' ? markAiMarkdown(message.content) : message.content);
             
             // Visual feedback - change button text temporarily
             const originalHTML = button.innerHTML;
@@ -1939,6 +2057,7 @@ class ChatUI {
                 this.openHtmlPreview(this._cleanupHtmlClosingTags(rawContent), false);
             } else {
                 contentDiv.innerHTML = formattedData.html;
+                if (messageDiv.classList.contains('assistant')) markAiText(contentDiv);
             }
             contentDiv.setAttribute('data-view-mode', 'formatted');
             
@@ -2732,6 +2851,7 @@ class ChatUI {
                 }
             } else {
                 contentDiv.innerHTML = formattedData.html;
+                if (isDone) markAiText(contentDiv);
             }
             contentDiv.setAttribute('data-content-type', formattedData.type);
             // Only store raw content on the final update to avoid accumulating a
