@@ -18,6 +18,12 @@ class ChatAPI {
         
         // Allow override via localStorage (for testing/debugging only)
         this.apiBase = localStorage.getItem('boudica_api_url') || defaultConfig.apiBase;
+
+        // Closing or leaving the page mid-answer stops the answer on the server
+        // too (see _sendCancel()).
+        window.addEventListener('pagehide', () => {
+            if (this._activeStream && this._activeRequestId) this._sendCancel(this._activeRequestId);
+        });
         this.useCGI = localStorage.getItem('boudica_use_cgi') === 'true' || defaultConfig.useCGI;
         this.mode = localStorage.getItem('boudica_mode') || defaultConfig.mode;
         
@@ -193,6 +199,10 @@ class ChatAPI {
         
         // CGI expects POST to /chat endpoint
         const url = `${this.apiBase}/chat`;
+        // Lets the Stop button cancel this request on the server (_sendCancel()).
+        const requestId = this._newRequestId();
+        this._pendingRequestId = requestId;
+        this._pendingUserId = userId;
         
         console.log(`Calling CGI endpoint: ${url}`);
         
@@ -204,6 +214,7 @@ class ChatAPI {
             const formData = new FormData();
             formData.append('message', messageText);
             formData.append('session_id', effectiveSessionId);
+            formData.append('request_id', requestId);
             formData.append('user_id', userId);
             formData.append('user_email', userEmail);
             formData.append('stream', onStream ? 'true' : 'false');
@@ -347,6 +358,7 @@ class ChatAPI {
         const requestBody = {
             prompt: messageText,
             session_id: effectiveSessionId,
+            request_id: requestId,
             user_id: userId,
             user_email: userEmail,
             stream: onStream ? true : false,
@@ -609,8 +621,35 @@ class ChatAPI {
      */
     abortActiveRequest() {
         if (!this._activeStream) return false;
+        // Closing the connection alone does not always reach the server: behind
+        // a proxy, a connection that was idle when the browser closed it can
+        // stay open there. So also tell the server to stop this request.
+        if (this._activeRequestId) this._sendCancel(this._activeRequestId);
         this._activeStream.abort();
         return true;
+    }
+
+    /** Ask the server to stop request `requestId` (fire and forget). */
+    _sendCancel(requestId) {
+        try {
+            fetch(`${this.apiBase}/cancel`, {
+                method: 'POST',
+                keepalive: true,   // still sent when the page is closing
+                headers: { 'Content-Type': 'application/json', ...this._authHeaders() },
+                body: JSON.stringify({ request_id: requestId, user_id: this._activeUserId || '' })
+            }).catch(() => {});
+        } catch (e) { /* nothing more to do */ }
+    }
+
+    /** A random id for one chat request (crypto.randomUUID needs https). */
+    _newRequestId() {
+        if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+            return window.crypto.randomUUID();
+        }
+        const b = new Uint8Array(16);
+        window.crypto.getRandomValues(b);
+        const h = Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+        return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
     }
 
     async handleStreamingResponse(url, requestBody, onStream, isMultipart = false) {
@@ -635,6 +674,9 @@ class ChatAPI {
         // server stops generating when it sees that. What had arrived is kept.
         const controller = new AbortController();
         this._activeStream = controller;
+        this._activeRequestId = this._pendingRequestId || null;
+        this._activeUserId = this._pendingUserId || '';
+        this._pendingRequestId = null;
         fetchOptions.signal = controller.signal;
         const stoppedNote = '\n\n*(Stopped before the answer was finished.)*';
         const notAnsweredNote = '*(Stopped before Boudica could answer.)*';
@@ -937,7 +979,10 @@ class ChatAPI {
             console.error('Streaming error:', error);
             throw error;
         } finally {
-            if (this._activeStream === controller) this._activeStream = null;
+            if (this._activeStream === controller) {
+                this._activeStream = null;
+                this._activeRequestId = null;
+            }
         }
     }
     
