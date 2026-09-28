@@ -918,7 +918,7 @@ function loadRules() {
     rules.forEach(rule => {
         const item = document.createElement('div');
         item.className = 'rule-item';
-        item.title = rule.text;
+        item.title = rule.builtin ? `Built-in: type /${rule.name} and your request to get a ${rule.label}` : rule.text;
 
         const nameSpan = document.createElement('span');
         nameSpan.className = 'rule-item-name';
@@ -947,8 +947,10 @@ function loadRules() {
         });
 
         item.appendChild(nameSpan);
-        item.appendChild(editBtn);
-        item.appendChild(delBtn);
+        if (!rule.builtin) {  // built-ins cannot be edited or deleted
+            item.appendChild(editBtn);
+            item.appendChild(delBtn);
+        }
         listEl.appendChild(item);
     });
 }
@@ -1235,6 +1237,13 @@ function expandRulesInMessage(text) {
     let expanded = text;
     rules.forEach(rule => {
         const escaped = rule.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        if (rule.builtin) {
+            // Built-ins only on an explicit "/pdf" at the start or after a
+            // space: "can I include pdf files?" must not make a PDF.
+            const slash = new RegExp(`(^|\\s)\\/${escaped}\\b`, 'gi');
+            expanded = expanded.replace(slash, (m, lead) => lead + rule.text);
+            return;
+        }
         const pattern = new RegExp(`(?:\\b(?:use|add|include)\\s+|\/\\s*)${escaped}\\b`, 'gi');
         expanded = expanded.replace(pattern, rule.text);
     });

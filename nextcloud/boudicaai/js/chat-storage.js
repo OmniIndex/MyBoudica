@@ -3,6 +3,25 @@
  * Handles local storage of chat history and conversations
  */
 
+// Built-in rules: "/pdf <request>" (etc.) makes Boudica write the answer as a
+// downloadable file. The server does the rest (inference_server.cpp renders
+// the model's HTML with boudica_html_render.py and marks the file as
+// AI-generated). Only the explicit "/name" form triggers them, see
+// expandRulesInMessage() in app.js.
+const BUILTIN_RULES = [
+    ['pdf',  'PDF document'],
+    ['docx', 'Word document'],
+    ['pptx', 'PowerPoint presentation'],
+    ['xlsx', 'Excel spreadsheet'],
+    ['epub', 'EPUB e-book'],
+].map(([name, label]) => ({
+    id: 'builtin-' + name,
+    name,
+    builtin: true,
+    label,
+    text: `BEGIN_RULE\nNAME: ${name}\nPERSONA: You write the requested content as a well-structured ${label}.\nEND_RULE`,
+}));
+
 class ChatStorage {
     constructor() {
         this.maxChats = 100; // Maximum number of chats to store
@@ -563,6 +582,17 @@ class ChatStorage {
      * Get all rules
      */
     getRules() {
+        // The user's own rules, then the built-in document rules (a user rule
+        // with the same name replaces the built-in one).
+        const own = this.getUserRules();
+        const names = new Set(own.map(r => (r.name || '').toLowerCase()));
+        return own.concat(BUILTIN_RULES.filter(r => !names.has(r.name)));
+    }
+
+    /**
+     * The rules this user created (what is stored; excludes built-ins)
+     */
+    getUserRules() {
         try {
             const data = localStorage.getItem(this.rulesKey);
             return data ? JSON.parse(data) : [];
@@ -577,7 +607,7 @@ class ChatStorage {
      */
     saveRule(rule) {
         try {
-            const rules = this.getRules();
+            const rules = this.getUserRules();
             const idx = rules.findIndex(r => r.id === rule.id);
             if (idx !== -1) {
                 rules[idx] = { ...rules[idx], ...rule, updatedAt: new Date().toISOString() };
@@ -600,7 +630,7 @@ class ChatStorage {
      */
     deleteRule(ruleId) {
         try {
-            const rules = this.getRules().filter(r => r.id !== ruleId);
+            const rules = this.getUserRules().filter(r => r.id !== ruleId);
             localStorage.setItem(this.rulesKey, JSON.stringify(rules));
             this.notifySettingsChanged('rule_deleted');
             return true;
