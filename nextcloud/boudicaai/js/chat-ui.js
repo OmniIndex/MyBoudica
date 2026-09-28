@@ -418,10 +418,10 @@ class ChatUI {
      * Display a message in the chat
      */
     /**
-     * Waiting words: from the moment a prompt is sent until the server's
-     * first reply line arrives, show WAITING_WORDS in the typing placeholder,
-     * one every 5 s, staying on the last. They are removed as soon as the
-     * server responds, leaving its status, thinking or answer on its own.
+     * Waiting words: from the moment a prompt is sent, show WAITING_WORDS one
+     * every 5 s, staying on the last, until the server sends something the
+     * user can see (a status line, thinking, answer text) or the request ends.
+     * Shown in the typing placeholder, then in the answer bubble.
      */
     startWaitingWords() {
         this.stopWaitingWords();
@@ -619,10 +619,13 @@ class ChatUI {
         }
         
         this.chatMessages.appendChild(messageDiv);
-        // The answer bubble is created on the server's first reply line: the
-        // waiting words give way to whatever it sends (status, thinking, text).
-        if (message.role === 'assistant' && !isTyping) {
-            this.stopWaitingWords();
+        // The answer bubble is created on the server's first reply line, which
+        // may be just "start": the waiting words move into it and stay until
+        // something the user can see replaces them (status, thinking, answer
+        // text) or the request ends. An answer that is not streamed (grounded
+        // RAG answers, documents) shows nothing else until it is done.
+        if (message.role === 'assistant' && !isTyping && !message.content) {
+            this._renderWaitingWord();
         }
 
         // If this is an HTML assistant message, attach a View HTML button to
@@ -662,6 +665,7 @@ class ChatUI {
      * starts arriving, since the narration is stale at that point.
      */
     updateAgenticStatus(messageId, message) {
+        this.stopWaitingWords();
         const messageEl = this.chatMessages.querySelector(`[data-message-id="${messageId}"]`);
         if (!messageEl) return;
         const contentDiv = messageEl.querySelector('.message-content');
@@ -693,6 +697,7 @@ class ChatUI {
      * @param {string} text - full reasoning text accumulated so far
      */
     updateLiveThinking(messageId, active, text) {
+        this.stopWaitingWords();
         const messageEl = this.chatMessages.querySelector(`[data-message-id="${messageId}"]`);
         if (!messageEl) return;
         this._clearAgenticStatus(messageEl);
