@@ -156,7 +156,7 @@ Util::addStyle(OCA\BoudicaAi\AppInfo\Application::APP_ID, 'boudicaai-main');
                 </div>
 
                 <!-- Collaboration Section -->
-                <div class="sidebar-section collab-section">
+                <div class="sidebar-section collab-section"<?php if (empty($_['collaboration_enabled'])) { p(' hidden'); print_unescaped(' style="display:none !important"'); } ?>>
                     <div class="sidebar-section-header">
                         <h3>Collaboration</h3>
                         <button id="toggleCollabBtn" class="btn btn-icon-sm" title="Toggle Collaboration">
@@ -945,7 +945,7 @@ Util::addStyle(OCA\BoudicaAi\AppInfo\Application::APP_ID, 'boudicaai-main');
             </div>
 
             <!-- ── Collaboration ── -->
-            <div class="faq-category" data-category="collaboration">
+            <div class="faq-category" data-category="collaboration"<?php if (empty($_['collaboration_enabled'])) { print_unescaped(' style="display:none !important"'); } ?>>
                 <button class="faq-category-header" aria-expanded="false">
                     <span>
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>

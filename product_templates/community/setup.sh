@@ -182,6 +182,10 @@ occ config:app:set boudicaai keycloak_url --value="${BOUDICA_KEYCLOAK_PUBLIC_URL
 occ config:app:set boudicaai keycloak_internal_url --value="${BOUDICA_KEYCLOAK_INTERNAL_URL}"
 occ config:app:set boudicaai keycloak_realm --value="boudica"
 occ config:app:set boudicaai keycloak_client_id --value="${KC_CLIENT_ID}"
+# No Collaboration area in the AI helper (other users, messages between
+# users, shared chats). The community service's guarded API route refuses
+# those calls as well.
+occ config:app:set boudicaai collaboration_enabled --value=no
 # Only the community's own accounts may sign in here.
 occ config:app:set boudicaai login_allowed_domains --value="${COMMUNITY_ACCOUNT_DOMAIN}"
 

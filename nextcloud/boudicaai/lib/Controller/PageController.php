@@ -52,6 +52,12 @@ class PageController extends Controller {
 			[
 				'boudica_provisioned_key' => $apiKey,
 				'boudica_provisioned_email' => $uid,
+				// App setting collaboration_enabled = "no" hides the
+				// Collaboration area (other users, messages, shared chats):
+				// a community MyBoudica has no contact between users. Its
+				// API route refuses those calls as well; this is the part
+				// the user sees.
+				'collaboration_enabled' => $this->config->getAppValue(Application::APP_ID, 'collaboration_enabled', 'yes') !== 'no',
 			],
 		);
 	}
