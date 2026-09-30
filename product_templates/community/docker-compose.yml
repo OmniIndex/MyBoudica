@@ -39,8 +39,11 @@ services:
       NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER}
       NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD}
       NEXTCLOUD_TRUSTED_DOMAINS: ${COMMUNITY_MY_DOMAIN}
-      OVERWRITEHOST: ${COMMUNITY_MY_DOMAIN}:${COMMUNITY_HTTPS_PORT:-443}
-      OVERWRITECLIURL: https://${COMMUNITY_MY_DOMAIN}:${COMMUNITY_HTTPS_PORT:-443}
+      # COMMUNITY_PUBLIC_HOST (setup.sh) is the address as browsers see it:
+      # the domain alone on port 443, else domain:port. It has to match the
+      # sign-in client's redirect address exactly.
+      OVERWRITEHOST: ${COMMUNITY_PUBLIC_HOST}
+      OVERWRITECLIURL: https://${COMMUNITY_PUBLIC_HOST}
       OVERWRITEPROTOCOL: https
     ports:
       - "127.0.0.1:${COMMUNITY_NEXTCLOUD_LOCAL_PORT:-8092}:80"
@@ -79,7 +82,7 @@ services:
     ports:
       - "127.0.0.1:${COMMUNITY_COLLABORA_LOCAL_PORT:-8093}:9980"
     environment:
-      aliasgroup1: https://${COMMUNITY_MY_DOMAIN}:${COMMUNITY_HTTPS_PORT:-443}
+      aliasgroup1: https://${COMMUNITY_PUBLIC_HOST}
       DONT_GEN_SSL_CERT: "true"
       extra_params: --o:ssl.enable=false --o:ssl.termination=true --o:mount_jail_tree=false
       content_security_policy: style-src 'self' 'unsafe-inline';

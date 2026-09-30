@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace OCA\BoudicaAi\Listener;
 
 use OCA\Files_External\Service\GlobalStoragesService;
+use OCP\App\IAppManager;
 use OCP\EventDispatcher\Event;
 use OCP\EventDispatcher\IEventListener;
 use OCP\User\Events\UserFirstTimeLoggedInEvent;
+use Psr\Container\ContainerInterface;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -29,8 +31,13 @@ class RagStorageMountListener implements IEventListener {
     private const MOUNT_POINT = 'Boudica AI Knowledge Base';
     private const CORPUS_USERS_ROOT = '/mnt/boudica_corpus/users';
 
+    // The external-storage service is fetched inside handle(), not injected:
+    // on an install without the External storage app (a community MyBoudica)
+    // injecting it made this listener impossible to build, and every new
+    // user's FIRST sign-in ended on an error page (the second one worked).
     public function __construct(
-        private GlobalStoragesService $storagesService,
+        private ContainerInterface $container,
+        private IAppManager $appManager,
         private LoggerInterface $logger,
     ) {
     }
@@ -40,12 +47,23 @@ class RagStorageMountListener implements IEventListener {
             return;
         }
 
+        if (!$this->appManager->isEnabledForAnyone('files_external')) {
+            return;
+        }
+        try {
+            /** @var GlobalStoragesService $storagesService */
+            $storagesService = $this->container->get(GlobalStoragesService::class);
+        } catch (\Throwable $e) {
+            $this->logger->error('RagStorageMountListener: external storage is not available: ' . $e->getMessage(), ['app' => 'boudicaai']);
+            return;
+        }
+
         $uid = $event->getUser()->getUID();
 
         // Idempotent: a UID that somehow fires this event twice (e.g.
         // deleted and re-provisioned) must not end up with duplicate
         // mounts stacking up in their Files sidebar.
-        foreach ($this->storagesService->getAllStorages() as $existing) {
+        foreach ($storagesService->getAllStorages() as $existing) {
             if ($existing->getMountPoint() === self::MOUNT_POINT
                 && in_array($uid, $existing->getApplicableUsers(), true)) {
                 return;
@@ -53,7 +71,7 @@ class RagStorageMountListener implements IEventListener {
         }
 
         try {
-            $storage = $this->storagesService->createStorage(
+            $storage = $storagesService->createStorage(
                 self::MOUNT_POINT,
                 'local',
                 'null::null',
@@ -62,7 +80,7 @@ class RagStorageMountListener implements IEventListener {
                 [$uid],
                 null,
             );
-            $this->storagesService->addStorage($storage);
+            $storagesService->addStorage($storage);
         } catch (\Throwable $e) {
             // Never block login over this - a missing/failed mount is
             // recoverable later, a blocked login is not.
