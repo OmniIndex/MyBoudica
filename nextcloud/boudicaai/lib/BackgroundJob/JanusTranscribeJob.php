@@ -36,12 +36,18 @@ class JanusTranscribeJob extends TimedJob {
         ITimeFactory $time,
         private JanusTranscriptionCommand $command,
         private LoggerInterface $logger,
+        private \OCP\App\IAppManager $appManager,
     ) {
         parent::__construct($time);
         $this->setInterval(5 * 60);
     }
 
     protected function run($argument): void {
+        // Call recordings only exist with Talk; without it this logged a
+        // "recordings directory missing" error every 5 minutes.
+        if (!$this->appManager->isEnabledForAnyone('spreed')) {
+            return;
+        }
         $output = new BufferedOutput();
         try {
             $this->command->run(new ArrayInput([]), $output);

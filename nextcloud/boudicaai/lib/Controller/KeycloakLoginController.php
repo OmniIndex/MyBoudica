@@ -180,6 +180,22 @@ class KeycloakLoginController extends Controller {
         if ($email === '') {
             return $this->errorPage($this->l()->t('Sign-in failed (no verified email available). Please try again.'));
         }
+        // Optional: limit who may sign in to THIS Nextcloud to accounts in
+        // the listed email domains (app setting login_allowed_domains,
+        // comma-separated; empty = everyone Boudica allows). A community
+        // MyBoudica sets it to the community's own account domain, so an
+        // account from another tenant on the same Boudica cannot enter it.
+        $allowedDomains = array_filter(array_map(
+            static fn (string $d): string => strtolower(trim($d)),
+            explode(',', $this->config->getAppValue('boudicaai', 'login_allowed_domains', ''))
+        ));
+        if ($allowedDomains !== []) {
+            $emailDomain = substr((string)strrchr($email, '@'), 1);
+            if (!in_array($emailDomain, $allowedDomains, true)) {
+                $this->logger->warning('Sign-in refused: account domain is not allowed on this site', ['app' => 'boudicaai', 'domain' => $emailDomain]);
+                return $this->errorPage($this->l()->t('This site is only for its own community accounts. Please use the sign-in page you were given.'));
+            }
+        }
         $name = is_string($userinfo['name'] ?? null) && $userinfo['name'] !== ''
             ? $userinfo['name']
             : (is_string($userinfo['preferred_username'] ?? null) ? $userinfo['preferred_username'] : $email);

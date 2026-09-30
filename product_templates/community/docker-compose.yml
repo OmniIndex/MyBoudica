@@ -1,0 +1,114 @@
+# Community MyBoudica: a second, smaller Nextcloud for a community site
+# (boudica_slm's content/community_boudica), safe for under-18s.
+#
+# Compared with ../collabora (the full MyBoudica):
+#   - NO Talk (no chat or calls between users): no janus, signaling or TURN
+#     services, and the Talk app is never installed.
+#   - NO whiteboard, no mail relay.
+#   - Only two Boudica apps are mounted: boudicaai (the AI helper and the
+#     "Sign in with Boudica" login) and boudicacode (the coding assistant).
+#     boudicaagent and boudicadashboard are not present at all.
+#
+# It can run on the same box as the full MyBoudica. Both stacks join the
+# shared network `boudica_shared`, where a compose service name is also a DNS
+# name, so every service here is prefixed `community-`: a second `nextcloud`
+# or `redis` on that network would answer for the full stack's own.
+#
+# Uses the images the full stack builds (../collabora); setup.sh here writes
+# .env and generated/ and configures Nextcloud.
+name: myboudica-community
+
+services:
+  community-redis:
+    image: redis:latest
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  community-nextcloud:
+    image: git.omniindex.io:5050/omniindex/boudica-collabora/nextcloud:latest
+    depends_on: [community-redis]  # postgres is external/shared (boudica_slm's)
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${COMMUNITY_DB_NAME}
+      POSTGRES_USER: ${COMMUNITY_DB_NAME}
+      POSTGRES_PASSWORD: ${COMMUNITY_DB_PASSWORD}
+      REDIS_HOST: community-redis
+      REDIS_HOST_PASSWORD: ${REDIS_PASSWORD}
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD}
+      NEXTCLOUD_TRUSTED_DOMAINS: ${COMMUNITY_MY_DOMAIN}
+      OVERWRITEHOST: ${COMMUNITY_MY_DOMAIN}:${COMMUNITY_HTTPS_PORT:-443}
+      OVERWRITECLIURL: https://${COMMUNITY_MY_DOMAIN}:${COMMUNITY_HTTPS_PORT:-443}
+      OVERWRITEPROTOCOL: https
+    ports:
+      - "127.0.0.1:${COMMUNITY_NEXTCLOUD_LOCAL_PORT:-8092}:80"
+    volumes:
+      - nextcloud_data:/var/www/html
+      - ../../nextcloud/boudicaai:/var/www/html/custom_apps/boudicaai
+      - ../../nextcloud/boudicacode:/var/www/html/custom_apps/boudicacode
+      - ./generated/nextcloud/boudica-csp.conf:/etc/apache2/conf-available/boudica-csp.conf:ro
+    extra_hosts:
+      # Nextcloud fetches Collabora's discovery document from its own public
+      # address. With a host-level reverse proxy that address is the host.
+      - "${COMMUNITY_MY_DOMAIN}:${COMMUNITY_MY_DOMAIN_IP:-host-gateway}"
+    restart: unless-stopped
+
+  community-nextcloud-cron:
+    image: git.omniindex.io:5050/omniindex/boudica-collabora/nextcloud:latest
+    depends_on: [community-redis, community-nextcloud]
+    entrypoint: /bin/sh
+    user: www-data
+    command: ["-c", "while true; do php /var/www/html/cron.php; sleep 300; done"]
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${COMMUNITY_DB_NAME}
+      POSTGRES_USER: ${COMMUNITY_DB_NAME}
+      POSTGRES_PASSWORD: ${COMMUNITY_DB_PASSWORD}
+      REDIS_HOST: community-redis
+      REDIS_HOST_PASSWORD: ${REDIS_PASSWORD}
+    volumes:
+      - nextcloud_data:/var/www/html
+      - ../../nextcloud/boudicaai:/var/www/html/custom_apps/boudicaai
+      - ../../nextcloud/boudicacode:/var/www/html/custom_apps/boudicacode
+    restart: unless-stopped
+
+  community-collabora:
+    image: git.omniindex.io:5050/omniindex/boudica-collabora/collabora:latest
+    ports:
+      - "127.0.0.1:${COMMUNITY_COLLABORA_LOCAL_PORT:-8093}:9980"
+    environment:
+      aliasgroup1: https://${COMMUNITY_MY_DOMAIN}:${COMMUNITY_HTTPS_PORT:-443}
+      DONT_GEN_SSL_CERT: "true"
+      extra_params: --o:ssl.enable=false --o:ssl.termination=true --o:mount_jail_tree=false
+      content_security_policy: style-src 'self' 'unsafe-inline';
+    depends_on: [community-nextcloud]
+    volumes:
+      - ./generated/collabora/boudica-config.js:/usr/share/coolwsd/browser/dist/boudica-config.js:ro
+    extra_hosts:
+      - "${COMMUNITY_MY_DOMAIN}:${COMMUNITY_MY_DOMAIN_IP:-host-gateway}"
+    restart: unless-stopped
+
+  # This stack's own TLS front door, for a box with no host-level reverse
+  # proxy (profile bundled-proxy; setup.sh turns it on). With a host proxy
+  # (ts-1's Apache) it never starts, and the proxy points at the loopback
+  # ports above.
+  community-nginx:
+    image: nginx:latest
+    profiles: ["bundled-proxy"]
+    depends_on: [community-nextcloud, community-collabora]
+    volumes:
+      - ./generated/nginx:/etc/nginx/conf.d:ro
+    ports:
+      - "${COMMUNITY_HTTPS_PORT:-443}:${COMMUNITY_HTTPS_PORT:-443}"
+    restart: unless-stopped
+
+networks:
+  default:
+    name: boudica_shared
+    external: true
+
+volumes:
+  redis_data:
+  nextcloud_data:

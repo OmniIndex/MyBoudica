@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace OCA\BoudicaAi\BackgroundJob;
 
 use OCA\BoudicaAi\Service\DigestService;
+use OCP\App\IAppManager;
 use OCP\AppFramework\Utility\ITimeFactory;
 use OCP\BackgroundJob\TimedJob;
 use Psr\Log\LoggerInterface;
@@ -25,12 +26,20 @@ class DigestPollJob extends TimedJob {
         ITimeFactory $time,
         private DigestService $digestService,
         private LoggerInterface $logger,
+        private IAppManager $appManager,
     ) {
         parent::__construct($time);
         $this->setInterval(5 * 60);
     }
 
     protected function run($argument): void {
+        // No Talk, nothing to digest. Without this the query below fails
+        // every 5 minutes on an install where Talk is switched off or was
+        // never installed (its tables don't exist), e.g. a community
+        // MyBoudica, where chat between users is deliberately absent.
+        if (!$this->appManager->isEnabledForAnyone('spreed')) {
+            return;
+        }
         $userIds = $this->digestService->getActiveTalkUserIds();
         foreach ($userIds as $userId) {
             try {

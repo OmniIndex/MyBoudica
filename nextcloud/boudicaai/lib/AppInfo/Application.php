@@ -66,6 +66,21 @@ class Application extends App implements IBootstrap {
     }
 
     public function boot(IBootContext $context): void {
+        // Without Talk there is nothing for the "Talk Digest" page to show:
+        // hide its menu entry (a community MyBoudica has no chat between
+        // users, so Talk is never installed there). The entry itself is
+        // declared in appinfo/info.xml, which cannot be conditional.
+        try {
+            $appManager = $context->getServerContainer()->get(\OCP\App\IAppManager::class);
+            if (!$appManager->isEnabledForAnyone('spreed')) {
+                // Inline, not a css/ file: css/ is build output and is not
+                // in git, so a file there would not reach other installs.
+                \OCP\Util::addHeader('style', [],
+                    'li:has(> a[href$="/apps/boudicaai/digest"]), a[href$="/apps/boudicaai/digest"] { display: none !important; }');
+            }
+        } catch (\Throwable $e) {
+            // Cosmetic only: never let it stop the app from booting.
+        }
         // CSP registration removed — OCP\Security\CSP\ContentSecurityPolicyManager
         // is not resolvable on this Nextcloud version. Re-add later via the
         // proxy-through-app approach instead of a direct CSP policy if needed.
