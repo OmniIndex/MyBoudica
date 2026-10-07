@@ -2230,6 +2230,13 @@
                         const chunk = JSON.parse(line);
                         if (chunk.error) throw new Error(chunk.error);
                         if (chunk.type === 'start') continue;
+                        // What the server is doing ("Reading your documents...",
+                        // "Checking the answer..."): shown until the answer
+                        // arrives, so a long grounded answer doesn't look hung.
+                        if (chunk.type === 'status') {
+                            if (!fullContent && chunk.message) onStream('*' + chunk.message + '*');
+                            continue;
+                        }
                         if (chunk.type === 'token') {
                             fullContent += chunk.token;
                             onStream(stripChannelMarkers(fullContent));
