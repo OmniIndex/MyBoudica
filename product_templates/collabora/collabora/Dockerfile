@@ -18,10 +18,17 @@ FROM collabora/code:${COLLABORA_TAG} AS base
 
 FROM alpine:3 AS editor
 COPY --from=base /usr/share/coolwsd/browser/dist/cool.html /cool.html
+COPY boudica_widget.js /boudica_widget.js
 # Inject before </head> - anchor chosen for stability across image updates
 # rather than assuming any particular surrounding markup in cool.html.
-RUN sed -i 's#</head>#<script src="boudica-config.js"></script><script src="boudica_widget.js" defer></script></head>#' \
-    /cool.html
+# The widget is loaded as boudica_widget.js?v=<its own hash>: Collabora
+# serves files under /browser/<collabora version>/ with a 128-day
+# Cache-Control and an ETag of that version, so a changed widget under the
+# same name never reached a browser that had loaded the old one (found
+# 2026-10-08: two widget updates that day reached no returning user).
+RUN v=$(sha256sum /boudica_widget.js | cut -c1-12) && \
+    sed -i "s#</head>#<script src=\"boudica-config.js\"></script><script src=\"boudica_widget.js?v=$v\" defer></script></head>#" \
+    /cool.html && grep -q "boudica_widget.js?v=$v" /cool.html
 
 FROM collabora/code:${COLLABORA_TAG}
 COPY boudica_widget.js boudica-config.js /usr/share/coolwsd/browser/dist/
