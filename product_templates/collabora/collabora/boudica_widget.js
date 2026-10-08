@@ -153,6 +153,13 @@
     // Merge with user config
     const config = Object.assign({}, defaultConfig, window.BoudicaConfig || {});
 
+    // When the current request last received anything (headers, a status
+    // line, a keepalive, a token). requestTimeout counts from here, not from
+    // when the request started: a long attached document can take several
+    // minutes to read while the server keeps reporting progress, and a total
+    // limit cut those requests off (2026-10-08).
+    let lastRequestActivity = 0;
+
     // Inject CSS
     const style = document.createElement('style');
     style.textContent = `
@@ -1587,6 +1594,7 @@
             }
 
             if (processing) {
+                lastRequestActivity = Date.now();
                 // Last-resort UI recovery, independent of the AbortController/
                 // requestTimeout chain in callBoudicaAPI(). That chain only
                 // unsticks the UI if the underlying fetch actually settles
@@ -1598,8 +1606,16 @@
                 // app's own request timeout so that timeout's own (more
                 // specific) error message gets first chance to run -- this is
                 // strictly a backstop for when it doesn't.
-                processingWatchdogTimer = setTimeout(() => {
+                const watchdogLimit = config.requestTimeout + 10000;
+                const watchdogTick = () => {
                     processingWatchdogTimer = null;
+                    // Still receiving (status lines, keepalives, tokens):
+                    // check again when the quiet period could next run out.
+                    const quiet = Date.now() - lastRequestActivity;
+                    if (quiet < watchdogLimit) {
+                        processingWatchdogTimer = setTimeout(watchdogTick, watchdogLimit - quiet);
+                        return;
+                    }
                     console.warn('[Boudica] Processing watchdog fired -- forcing UI recovery after a request that never completed or failed cleanly.');
                     isProcessing = false;
                     elements.sendButton.disabled = false;
@@ -1609,7 +1625,8 @@
                         "If you're on a VPN, this can happen with file attachments specifically; try again with the VPN " +
                         "(or its threat-protection/ad-blocking features) temporarily disabled."
                     );
-                }, config.requestTimeout + 10000);
+                };
+                processingWatchdogTimer = setTimeout(watchdogTick, watchdogLimit);
             }
         }
 
@@ -2140,7 +2157,13 @@
         }
         
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), config.requestTimeout);
+        let timeoutId = null;
+        const noteActivity = () => {
+            lastRequestActivity = Date.now();
+            clearTimeout(timeoutId);
+            timeoutId = setTimeout(() => controller.abort(), config.requestTimeout);
+        };
+        noteActivity();
 
         try {
             let response;
@@ -2207,7 +2230,7 @@
                 });
             }
             
-            clearTimeout(timeoutId);
+            noteActivity();
 
             if (!response.ok) {
                 const errData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
@@ -2221,6 +2244,7 @@
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
+                noteActivity();
                 buffer += decoder.decode(value, { stream: true });
                 const lines = buffer.split('\n');
                 buffer = lines.pop() || '';
@@ -2257,6 +2281,8 @@
                 }
             }
 
+            clearTimeout(timeoutId);
+
             // Flush any bytes the decoder held back waiting for the rest of a
             // multi-byte character (e.g. an emoji) that never arrived because
             // the stream closed. Without this final non-streaming decode call,
@@ -2288,7 +2314,9 @@
             }
         } catch (error) {
             clearTimeout(timeoutId);
-            if (error.name === 'AbortError') throw new Error('Request timeout – please try again');
+            if (error.name === 'AbortError') {
+                throw new Error(`No response from the server for ${Math.round(config.requestTimeout / 60000)} minutes – please try again`);
+            }
             throw error;
         }
     }//end callBoudicaAPI

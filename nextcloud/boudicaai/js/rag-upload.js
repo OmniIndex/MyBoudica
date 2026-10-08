@@ -16,6 +16,22 @@
     const UPLOAD_ENDPOINT = '/cgi-bin/rag_upload';
     const MAX_FILE_MB      = 100;
 
+    // Authorization header for /cgi-bin/rag_upload, which verifies the caller
+    // from this token instead of trusting the user_id field (2026-09-24).
+    // saml-auth.js keeps the current token in localStorage.boudica_session.token,
+    // so it's read on every call. Ported from chat_interface 2026-10-08:
+    // without it every KB call here got "Sign in required".
+    function authHeaders() {
+        try {
+            const session = JSON.parse(localStorage.getItem('boudica_session') || '{}');
+            const token = session.token;
+            if (token && token !== 'local-sovereign-session') {
+                return { 'Authorization': 'Bearer ' + token };
+            }
+        } catch (e) {}
+        return {};
+    }
+
     // -----------------------------------------------------------------------
     // State
     // -----------------------------------------------------------------------
@@ -95,7 +111,7 @@
         setLoading(true);
         const url = UPLOAD_ENDPOINT + '?user_id=' + encodeURIComponent(userId)
                   + '&path=' + encodeURIComponent(rel);
-        fetch(url, { credentials: 'same-origin' })
+        fetch(url, { credentials: 'same-origin', headers: authHeaders() })
             .then(r => r.json())
             .then(data => {
                 setLoading(false);
@@ -278,7 +294,7 @@
             if (relDir) form.append('rel_path', relDir);
             form.append('file', file, file.name);
 
-            fetch(UPLOAD_ENDPOINT, { method: 'POST', credentials: 'same-origin', body: form })
+            fetch(UPLOAD_ENDPOINT, { method: 'POST', credentials: 'same-origin', headers: authHeaders(), body: form })
                 .then(r  => r.json())
                 .then(data => {
                     if (data.success && data.saved > 0) uploaded += data.saved;
@@ -333,6 +349,7 @@
             fetch(UPLOAD_ENDPOINT, {
                 method: 'POST',
                 credentials: 'same-origin',
+                headers: authHeaders(),
                 body: form
             })
             .then(r => r.json())
@@ -358,7 +375,7 @@
         form.append('file_path', relFilePath);
 
         setLoading(true);
-        fetch(UPLOAD_ENDPOINT, { method: 'POST', credentials: 'same-origin', body: form })
+        fetch(UPLOAD_ENDPOINT, { method: 'POST', credentials: 'same-origin', headers: authHeaders(), body: form })
             .then(r => r.json())
             .then(data => {
                 setLoading(false);
