@@ -2145,6 +2145,26 @@
         return new File([blob], fileName, { type: 'text/plain' });
     }
 
+    // A request is sent as a job (async): the server answers at once with a
+    // job id, and the widget then asks /chat_status every couple of seconds
+    // for the lines written since its last look. Some networks (antivirus
+    // HTTPS scanning, proxies) hold a streamed answer back and cut a long
+    // connection after a minute or two: one customer saw the first status
+    // line and then "Network error" on every long request, while the server
+    // finished each answer (2026-10-08). Short polls get through those. A
+    // server without jobs ignores async and streams as before, and the same
+    // reader below handles that.
+    const JOB_POLL_MS = 2000;
+    const JOB_POLL_TIMEOUT_MS = 30000;        // one look at the job
+    const JOB_POLL_MAX_FAILURES_MS = 120000;  // keep trying through short outages
+
+    function newRequestId() {
+        if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+        const bytes = new Uint8Array(16);
+        crypto.getRandomValues(bytes);
+        return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+    }
+
     async function callBoudicaAPI(message, onStream, files = null) {
         message = 'No Memory. ' + message;
         const baseUrl = (config.apiEndpoint || '/api/boudica').replace(/\/$/, '');
@@ -2155,7 +2175,8 @@
             // would immediately clobber whatever it just set.
             getApiKey();
         }
-        
+        const requestId = newRequestId();
+
         const controller = new AbortController();
         let timeoutId = null;
         const noteActivity = () => {
@@ -2165,9 +2186,44 @@
         };
         noteActivity();
 
+        let fullContent = '';
+        let jobId = null;
+        // One NDJSON line from the server, streamed or from a job.
+        const handleLine = (line) => {
+            if (!line.trim()) return;
+            let chunk;
+            try {
+                chunk = JSON.parse(line);
+            } catch (e) {
+                // Previously this swallowed EVERY JSON.parse failure with
+                // no trace, so a malformed mid-stream line just vanished.
+                // Surface it -- it's diagnosable now instead of invisible.
+                console.warn('[Boudica] Skipped unparseable stream line:', line, e);
+                return;
+            }
+            if (chunk.error) throw new Error(chunk.error);
+            if (chunk.job_id && chunk.success) { jobId = chunk.job_id; return; }
+            if (chunk.type === 'start') return;
+            // What the server is doing ("Reading your documents...",
+            // "Checking the answer..."): shown until the answer
+            // arrives, so a long grounded answer doesn't look hung.
+            if (chunk.type === 'status') {
+                if (!fullContent && chunk.message) onStream('*' + chunk.message + '*');
+                return;
+            }
+            if (chunk.type === 'token' && chunk.token) {
+                fullContent += chunk.token;
+                onStream(stripChannelMarkers(fullContent));
+            }
+            if (chunk.response !== undefined && chunk.response !== '') {
+                fullContent = chunk.response;
+                onStream(stripChannelMarkers(fullContent));
+            }
+        };
+
         try {
             let response;
-            
+
             // If files are provided, use FormData for multipart upload
             if (files && files.length > 0) {
                 const formData = new FormData();
@@ -2176,19 +2232,21 @@
                 formData.append('user_id', userId);
                 formData.append('user_email', userId);
                 formData.append('stream', 'true');
+                formData.append('async', 'true');
+                formData.append('request_id', requestId);
                 formData.append('api_key', apiKey);
                 formData.append('temperature', config.temperature ?? 0.8);
                 formData.append('max_tokens', CONTEXT_MODES[contextMode]?.maxTokens ?? config.maxTokens ?? 49000);
                 formData.append('use_rag', 'true');
                 formData.append('inference_type', 'document_writer');
-                
+
                 // Append files
                 files.forEach((file, index) => {
                     formData.append(`document_${index}`, file);
                     formData.append(`filename_${index}`, file.name);
                 });
                 formData.append('document_count', files.length.toString());
-                
+
                 console.log(`Calling API with ${files.length} file(s) via multipart`);
 
                 response = await fetch(url, {
@@ -2215,13 +2273,15 @@
                     user_id: userId,
                     user_email: userId,
                     stream: true,
+                    async: true,
+                    request_id: requestId,
                     api_key: apiKey,
                     temperature: config.temperature ?? 0.8,
                     max_tokens: CONTEXT_MODES[contextMode]?.maxTokens ?? config.maxTokens ?? 35000,
                     use_rag: true
                 };
                 console.log("Message Body:", requestBody);
-                
+
                 response = await fetch(url, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -2229,7 +2289,7 @@
                     signal: controller.signal
                 });
             }
-            
+
             noteActivity();
 
             if (!response.ok) {
@@ -2239,79 +2299,91 @@
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let buffer = '';
-            let fullContent = '';
 
-            while (true) {
+            while (!jobId) {
                 const { done, value } = await reader.read();
                 if (done) break;
                 noteActivity();
                 buffer += decoder.decode(value, { stream: true });
                 const lines = buffer.split('\n');
                 buffer = lines.pop() || '';
-                for (const line of lines) {
-                    if (!line.trim()) continue;
+                for (const line of lines) handleLine(line);
+            }
+
+            if (!jobId) {
+                // Flush any bytes the decoder held back waiting for the rest of a
+                // multi-byte character (e.g. an emoji) that never arrived because
+                // the stream closed. Without this final non-streaming decode call,
+                // those trailing bytes are silently discarded by TextDecoder.
+                buffer += decoder.decode();
+                // A last line without its newline: the job reply, or (from a
+                // server without jobs) the end of a stream.
+                if (buffer.trim()) {
                     try {
-                        const chunk = JSON.parse(line);
-                        if (chunk.error) throw new Error(chunk.error);
-                        if (chunk.type === 'start') continue;
-                        // What the server is doing ("Reading your documents...",
-                        // "Checking the answer..."): shown until the answer
-                        // arrives, so a long grounded answer doesn't look hung.
-                        if (chunk.type === 'status') {
-                            if (!fullContent && chunk.message) onStream('*' + chunk.message + '*');
-                            continue;
-                        }
-                        if (chunk.type === 'token') {
-                            fullContent += chunk.token;
-                            onStream(stripChannelMarkers(fullContent));
-                        }
-                        if (chunk.response !== undefined && chunk.response !== '') {
-                            fullContent = chunk.response;
-                            onStream(stripChannelMarkers(fullContent));
-                        }
+                        JSON.parse(buffer);
+                        handleLine(buffer);
                     } catch (e) {
-                        // Previously this swallowed EVERY JSON.parse failure with
-                        // no trace, so a malformed mid-stream line just vanished.
-                        // Surface it -- it's diagnosable now instead of invisible.
-                        if (e.message && !e.message.includes('JSON')) {
-                            throw e;
-                        }
-                        console.warn('[Boudica] Skipped unparseable stream line:', line, e);
+                        // This is the case that most likely explains truncated endings:
+                        // the server closed the connection before finishing the last
+                        // NDJSON line, so it's not valid JSON and can't be recovered
+                        // client-side. Previously silent -- now at least visible in
+                        // devtools so it's distinguishable from "model finished early".
+                        if (e.message && !e.message.includes('JSON')) throw e;
+                        console.warn('[Boudica] Final stream chunk was incomplete and could not be parsed -- response may be truncated. Raw tail:', buffer, e);
                     }
                 }
             }
+            if (!jobId) {
+                clearTimeout(timeoutId);
+                return;
+            }
 
-            clearTimeout(timeoutId);
-
-            // Flush any bytes the decoder held back waiting for the rest of a
-            // multi-byte character (e.g. an emoji) that never arrived because
-            // the stream closed. Without this final non-streaming decode call,
-            // those trailing bytes are silently discarded by TextDecoder.
-            buffer += decoder.decode();
-
-            // Flush any remaining buffer content
-            if (buffer.trim()) {
+            // The job runs on the server whether or not anyone is connected;
+            // fetch what it has written so far until it is done.
+            reader.cancel().catch(() => {});
+            let offset = 0;
+            let failingSince = 0;
+            while (true) {
+                await new Promise(resolve => setTimeout(resolve, JOB_POLL_MS));
+                let status;
+                // Each look has its own short limit: a look that hangs is
+                // dropped and the next one tried, rather than waiting out
+                // the whole request timeout.
+                const poll = new AbortController();
+                const pollTimer = setTimeout(() => poll.abort(), JOB_POLL_TIMEOUT_MS);
+                const stopPoll = () => poll.abort();
+                controller.signal.addEventListener('abort', stopPoll, { once: true });
                 try {
-                    const chunk = JSON.parse(buffer);
-                    if (chunk.error) throw new Error(chunk.error);
-                    if (chunk.response !== undefined && chunk.response !== '') {
-                        onStream(stripChannelMarkers(chunk.response));
-                    } else if (chunk.type === 'token' && chunk.token) {
-                        fullContent += chunk.token;
-                        onStream(stripChannelMarkers(fullContent));
-                    }
+                    const r = await fetch(`${baseUrl}/chat_status?job_id=${encodeURIComponent(jobId)}&offset=${offset}`, {
+                        headers: apiKey ? { 'Authorization': 'Bearer ' + apiKey } : {},
+                        cache: 'no-store',
+                        signal: poll.signal
+                    });
+                    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                    status = await r.json();
                 } catch (e) {
-                    // This is the case that most likely explains truncated endings:
-                    // the server closed the connection before finishing the last
-                    // NDJSON line, so it's not valid JSON and can't be recovered
-                    // client-side. Previously silent -- now at least visible in
-                    // devtools so it's distinguishable from "model finished early".
-                    console.warn('[Boudica] Final stream chunk was incomplete and could not be parsed -- response may be truncated. Raw tail:', buffer, e);
-                    if (e.message && !e.message.includes('JSON')) {
-                        throw e;
+                    if (controller.signal.aborted) throw e;
+                    if (!failingSince) failingSince = Date.now();
+                    if (Date.now() - failingSince > JOB_POLL_MAX_FAILURES_MS) {
+                        throw new Error('Lost contact with the server while it was working on your request – please try again');
                     }
+                    console.warn('[Boudica] Job status check failed, trying again:', e);
+                    continue;
+                } finally {
+                    clearTimeout(pollTimer);
+                    controller.signal.removeEventListener('abort', stopPoll);
+                }
+                failingSince = 0;
+                noteActivity();
+                if (!status.success) throw new Error(status.error || 'The request could not be found on the server');
+                if (status.data) status.data.split('\n').forEach(handleLine);
+                if (typeof status.offset === 'number') offset = status.offset;
+                if (status.state === 'done') break;
+                if (status.state === 'lost') {
+                    throw new Error('The server stopped working on this request before it finished – please try again');
                 }
             }
+            clearTimeout(timeoutId);
         } catch (error) {
             clearTimeout(timeoutId);
             if (error.name === 'AbortError') {
