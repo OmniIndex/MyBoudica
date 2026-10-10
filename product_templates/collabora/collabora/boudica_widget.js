@@ -1104,12 +1104,18 @@
             if (message) {
                 addMessage(message, 'user');
             }
+            lastTypedMessage = message;
             elements.input.value = '';
             elements.input.style.height = 'auto';
             setProcessing(true);
 
             // Create a streaming assistant bubble
             const assistantBubble = createStreamingBubble();
+
+            if (queuedFiles.length === 0 && currentDocType() === 'text' && isDeckRequest(message)) {
+                await runDeck(assistantBubble, null);
+                return;
+            }
             
             // If files are queued, send them with the message
             if (queuedFiles.length > 0) {
@@ -1145,6 +1151,7 @@
                     const isImageAnswer = !!(extractGeneratedImage(responseText) || extractSvg(responseText));
                     if (shouldUpdateDocument && !isImageAnswer) {
                         commitDocumentContent(responseText);
+                        updateStreamingBubble(assistantBubble, documentWrittenMessage(responseText));
                     } else if (shouldUpdateDocument) {
                         updateStreamingBubble(assistantBubble, responseText);   // replace the "Composing document\u2026" text
                     }
@@ -1258,6 +1265,7 @@
                         decorateResponse(assistantBubble, responseText);
                     } else {
                         commitDocumentContent(responseText);
+                        updateStreamingBubble(assistantBubble, documentWrittenMessage(responseText));
                         decorateResponse(assistantBubble, responseText, { committed: true });
                     }
                     clearQueuedFiles();
@@ -1425,6 +1433,16 @@
                 return;
             }
             if ( updateDocument ) {
+                // A status line ("*Checking the answer against your documents…*")
+                // is shown as itself: counted as characters it read "Composing
+                // document… (45 characters so far)" for minutes while the answer
+                // was being checked (2026-10-10).
+                const status = /^\*[^*\n]{1,200}\*$/.test((text || '').trim());
+                if (status) {
+                    contentDiv.innerHTML = renderMarkdown(text.trim());
+                    elements.messages.scrollTop = elements.messages.scrollHeight;
+                    return;
+                }
                 const charCount = text ? text.length : 0;
                 contentDiv.innerHTML = `Composing document… (${charCount} characters so far)`;
                 elements.messages.scrollTop = elements.messages.scrollHeight;
@@ -1629,6 +1647,90 @@
                 processingWatchdogTimer = setTimeout(watchdogTick, watchdogLimit);
             }
         }
+
+        // A request from before a page reload: show its answer here. It is
+        // shown with the usual Insert buttons and never written into the
+        // document by itself - the user may have changed the document since.
+        // Makes a presentation from the open document (resumeJobId: follow a
+        // deck job started before the page reloaded). Leaves isProcessing off.
+        async function runDeck(assistantBubble, resumeJobId) {
+            try {
+                let jobId = resumeJobId;
+                const details = getDocumentDetails();
+                const baseName = (details.documentName || 'Presentation').replace(/\.[^.]+$/, '');
+                if (!jobId) {
+                    updateStreamingBubble(assistantBubble, '*Reading the document\u2026*');
+                    const text = await downloadDocumentAsText('txt', 60000);
+                    if (!text || !text.trim()) throw new Error('The document is empty \u2013 there is nothing to make slides from.');
+                    jobId = await startDeckJob(text, baseName);
+                    savePendingJob(jobId, 'deck');
+                }
+                let summary = '';
+                await callBoudicaAPI('', (partialText) => {
+                    summary = partialText;
+                    updateStreamingBubble(assistantBubble, partialText);
+                }, null, jobId);
+                updateStreamingBubble(assistantBubble, '*Saving the presentation next to your document\u2026*');
+                const blob = await fetchDeckFile(jobId);
+                const saved = await saveFileNextToDocument(blob, baseName);
+                updateStreamingBubble(assistantBubble,
+                    (summary || 'Your presentation is ready.') + `\n\nSaved as **${saved.name}** in ${saved.dir === '/' ? 'your top folder' : saved.dir}.`);
+                const contentDiv = assistantBubble.querySelector('.boudica-message-content');
+                if (contentDiv) {
+                    const bar = document.createElement('div');
+                    bar.className = 'boudica-actions';
+                    bar.appendChild(makeActionButton('Open presentation', () => {
+                        window.open(presentationUrl(saved), '_blank', 'noopener');
+                    }));
+                    contentDiv.appendChild(bar);
+                }
+            } catch (error) {
+                assistantBubble.remove();
+                addErrorMessage(error.message);
+                console.error('Boudica presentation error:', error);
+            } finally {
+                setProcessing(false);
+                elements.input.focus();
+            }
+        }
+
+        async function resumePendingJob() {
+            const pending = loadPendingJob();
+            if (!pending || !apiKey || isProcessing) return;
+            if (!isOpen) toggleChat();
+            if (pending.message) addMessage(pending.message, 'user');
+            addMessage('Picking up your request from before the page reloaded…', 'system');
+            setProcessing(true);
+            const assistantBubble = createStreamingBubble();
+            if (pending.kind === 'deck') {
+                await runDeck(assistantBubble, pending.jobId);
+                return;
+            }
+            try {
+                let responseText = '';
+                await callBoudicaAPI('', (partialText) => {
+                    responseText = partialText;
+                    updateStreamingBubble(assistantBubble, partialText);
+                }, null, pending.jobId);
+                responseText = stripReasoningPreamble(responseText);
+                responseText = stripBackendStopNotice(responseText);
+                if (responseText.toLocaleLowerCase().includes("final answer:")) {
+                    responseText = responseText.slice(responseText.toLocaleLowerCase().indexOf("final answer:") + 13);
+                }
+                responsearray.push(responseText);
+                updateStreamingBubble(assistantBubble, responseText);
+                decorateResponse(assistantBubble, responseText);
+            } catch (error) {
+                assistantBubble.remove();
+                addErrorMessage(error.message);
+                console.error('Boudica resume error:', error);
+            } finally {
+                setProcessing(false);
+            }
+        }
+        // After this script has run to the end: initWidget() can run before
+        // the pending-job constants further down are initialised.
+        setTimeout(resumePendingJob, 0);
 
         // Auto-open if configured
         if (config.autoOpen) {
@@ -2117,6 +2219,19 @@
      * likely to be dropped or overtaken. A single atomic write after the
      * full, cleaned response is ready avoids that whole failure mode.
      */
+    // Replaces the "Composing document… (N characters so far)" bubble once the
+    // answer is in the document: that text used to stay, so a finished request
+    // looked stuck (2026-10-10).
+    function documentWrittenMessage(text) {
+        const chars = (text || '').length.toLocaleString();
+        let msg = `\u2713 Done \u2013 written into your document (${chars} characters).`;
+        if (lastAnswerTruncated) {
+            msg += '\n\n**Note:** the answer reached its length limit and stops part-way. ' +
+                   'Switch to Document Mode for a longer limit and send the request again.';
+        }
+        return msg;
+    }
+
     function commitDocumentContent(text) {
         if (!text || !text.trim()) {
             console.warn('[Boudica] Skipped final document write -- cleaned response was empty. Nothing was changed in the editor.');
@@ -2154,9 +2269,66 @@
     // finished each answer (2026-10-08). Short polls get through those. A
     // server without jobs ignores async and streams as before, and the same
     // reader below handles that.
+    // Same words as the chat app (chat_interface/scripts/chat-ui.js): shown one
+    // every 5 s, staying on the last, while the server sends only keepalives and
+    // nothing the user can see yet (2026-10-10).
+    const WAITING_WORDS = [
+        { word: 'Cadgdoodling',       meaning: 'Working out what I need to do' },
+        { word: 'Blowinfussnoodling', meaning: 'Taking the prompt and passing it to the AI' },
+        { word: 'Spellcheckling',     meaning: 'Seeing if the AI can understand the typing' },
+        { word: 'Intentnifying',      meaning: 'Looking to see what it is the user wants to do' },
+        { word: 'Gatheringupling',    meaning: 'Bringing all of the data together and working through it' },
+        { word: 'Concludadeling',     meaning: 'Starting to infer' },
+    ];
+    const WAITING_WORD_MS = 5000;
+    const WAITING_REDRAW_MS = 1000;   // thinking tokens arrive many per second
+
     const JOB_POLL_MS = 2000;
     const JOB_POLL_TIMEOUT_MS = 30000;        // one look at the job
     const JOB_POLL_MAX_FAILURES_MS = 120000;  // keep trying through short outages
+
+    // The job of the request in progress is remembered per document, so a
+    // page reload doesn't lose the answer: the widget picks the job up again
+    // when it loads (2026-10-09). A customer whose editor connection kept
+    // dropping (antivirus) reloaded the page each time, and two finished
+    // answers were never seen. The server keeps a job for 2 hours.
+    const PENDING_JOB_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+    let lastTypedMessage = '';   // what the user typed, shown again on resume
+    // Set by callBoudicaAPI from the server's final line: the answer stopped at
+    // the length limit (finish_reason "length"), so a written document ends part-way.
+    let lastAnswerTruncated = false;
+
+    function pendingJobKey() {
+        let doc = '';
+        try { doc = new URLSearchParams(window.location.search).get('WOPISrc') || ''; } catch (e) { /* none */ }
+        return 'boudica_pending_job:' + (doc || window.location.pathname);
+    }
+    function savePendingJob(jobId, kind = 'chat') {
+        try {
+            localStorage.setItem(pendingJobKey(), JSON.stringify({
+                jobId, userId, message: lastTypedMessage, startedAt: Date.now(), kind
+            }));
+        } catch (e) { /* private window or storage full: no resume */ }
+    }
+    function clearPendingJob(jobId) {
+        try {
+            const entry = JSON.parse(localStorage.getItem(pendingJobKey()) || 'null');
+            if (!entry || !jobId || entry.jobId === jobId) localStorage.removeItem(pendingJobKey());
+        } catch (e) { /* nothing to clear */ }
+    }
+    function loadPendingJob() {
+        try {
+            const entry = JSON.parse(localStorage.getItem(pendingJobKey()) || 'null');
+            if (!entry || !entry.jobId) return null;
+            if (entry.userId !== userId || Date.now() - entry.startedAt > PENDING_JOB_MAX_AGE_MS) {
+                clearPendingJob();
+                return null;
+            }
+            return entry;
+        } catch (e) {
+            return null;
+        }
+    }
 
     function newRequestId() {
         if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
@@ -2165,7 +2337,9 @@
         return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
     }
 
-    async function callBoudicaAPI(message, onStream, files = null) {
+    // resumeJobId: follow a job sent before the page reloaded instead of
+    // sending a request.
+    async function callBoudicaAPI(message, onStream, files = null, resumeJobId = null) {
         message = 'No Memory. ' + message;
         const baseUrl = (config.apiEndpoint || '/api/boudica').replace(/\/$/, '');
         let url = baseUrl + '/chat';
@@ -2187,7 +2361,34 @@
         noteActivity();
 
         let fullContent = '';
-        let jobId = null;
+        let jobId = resumeJobId;
+        lastAnswerTruncated = false;
+        // Feedback while the server only sends keepalives: the waiting words
+        // until it reports a status, then that status with the time it has
+        // been working ("Checking the answer…" can take minutes).
+        let lastStatus = '';
+        let statusAt = 0;
+        let waitIdx = 0;
+        let waitAt = Date.now();
+        let shownAt = 0;
+        const showWaiting = () => {
+            if (fullContent) return;
+            const now = Date.now();
+            if (now - shownAt < WAITING_REDRAW_MS) return;
+            shownAt = now;
+            if (lastStatus) {
+                const secs = Math.round((now - statusAt) / 1000);
+                const took = secs < 60 ? `${secs} s` : `${Math.round(secs / 60)} min`;
+                onStream(`*${lastStatus} (still working \u00b7 ${took})*`);
+                return;
+            }
+            if (now - waitAt >= WAITING_WORD_MS && waitIdx < WAITING_WORDS.length - 1) {
+                waitIdx++;
+                waitAt = now;
+            }
+            const w = WAITING_WORDS[waitIdx];
+            onStream(`*${w.word}\u2026 \u2013 ${w.meaning}*`);
+        };
         // One NDJSON line from the server, streamed or from a job.
         const handleLine = (line) => {
             if (!line.trim()) return;
@@ -2208,13 +2409,22 @@
             // "Checking the answer..."): shown until the answer
             // arrives, so a long grounded answer doesn't look hung.
             if (chunk.type === 'status') {
+                if (chunk.message) {
+                    lastStatus = String(chunk.message).replace(/\*/g, '');
+                    statusAt = Date.now();
+                }
                 if (!fullContent && chunk.message) onStream('*' + chunk.message + '*');
                 return;
             }
+            // Keepalives and the model's hidden reasoning: nothing to show
+            // yet, but the request is alive.
+            if (chunk.type === 'keepalive' || chunk.type === 'thinking_start' ||
+                chunk.type === 'thinking_token' || chunk.type === 'thinking_end') { showWaiting(); return; }
             if (chunk.type === 'token' && chunk.token) {
                 fullContent += chunk.token;
                 onStream(stripChannelMarkers(fullContent));
             }
+            if (chunk.truncated === true || chunk.finish_reason === 'length') lastAnswerTruncated = true;
             if (chunk.response !== undefined && chunk.response !== '') {
                 fullContent = chunk.response;
                 onStream(stripChannelMarkers(fullContent));
@@ -2222,6 +2432,7 @@
         };
 
         try {
+          if (!jobId) {
             let response;
 
             // If files are provided, use FormData for multipart upload
@@ -2341,6 +2552,8 @@
             // The job runs on the server whether or not anyone is connected;
             // fetch what it has written so far until it is done.
             reader.cancel().catch(() => {});
+            savePendingJob(jobId);
+          }
             let offset = 0;
             let failingSince = 0;
             while (true) {
@@ -2375,14 +2588,26 @@
                 }
                 failingSince = 0;
                 noteActivity();
-                if (!status.success) throw new Error(status.error || 'The request could not be found on the server');
-                if (status.data) status.data.split('\n').forEach(handleLine);
+                if (!status.success) {
+                    clearPendingJob(jobId);
+                    throw new Error(status.error || 'The request could not be found on the server');
+                }
+                if (status.data) {
+                    try {
+                        status.data.split('\n').forEach(handleLine);
+                    } catch (e) {
+                        clearPendingJob(jobId);   // the job itself reported an error
+                        throw e;
+                    }
+                }
                 if (typeof status.offset === 'number') offset = status.offset;
                 if (status.state === 'done') break;
                 if (status.state === 'lost') {
+                    clearPendingJob(jobId);
                     throw new Error('The server stopped working on this request before it finished – please try again');
                 }
             }
+            clearPendingJob(jobId);
             clearTimeout(timeoutId);
         } catch (error) {
             clearTimeout(timeoutId);
@@ -2392,6 +2617,116 @@
             throw error;
         }
     }//end callBoudicaAPI
+
+    // ---- Presentations (2026-10-10) -----------------------------------------
+    // "Create a presentation from this document" in Writer: the server's /deck
+    // job turns the document's text into an editable .pptx (slide plan from the
+    // model, pictures from FLUX, drawn by boudica_deck_build.py), the widget
+    // follows it like a chat job, saves the file next to the document in
+    // Nextcloud and offers to open it in Impress. The open document itself is
+    // never changed.
+
+    // A request for a slide deck made from the open document. "Create a
+    // document with a presentation outline" is a document, not a deck, and
+    // "an image for my presentation" is an image.
+    function isDeckRequest(message) {
+        const m = /\b(create|make|build|generate|produce|turn|convert)\b(.{0,60}?)\b(presentation|slide ?deck|deck|powerpoint|pptx|slides)\b/i.exec(message || '');
+        if (!m) return false;
+        if (/\b(image|picture|photo|logo|icon|illustration)s?\b/i.test(message)) return false;
+        if (/\b(document|outline|summary|report|notes|plan|structure|script)\b/i.test(m[2])) return false;
+        // bare "slides" only with "into" / "from": "turn this into slides", "slides from this"
+        if (/^slides$/i.test(m[3]) && !/\b(into|from)\b/i.test(message)) return false;
+        return true;
+    }
+
+    function apiBase() {
+        return (config.apiEndpoint || '/api/boudica').replace(/\/$/, '');
+    }
+
+    // Starts the deck job; returns its job id.
+    async function startDeckJob(text, title) {
+        if (!apiKey) getApiKey();
+        const r = await fetch(apiBase() + '/deck', {
+            method: 'POST',
+            headers: Object.assign({ 'Content-Type': 'application/json' },
+                                   apiKey ? { 'Authorization': 'Bearer ' + apiKey } : {}),
+            body: JSON.stringify({ text, title, images: true, request_id: newRequestId(),
+                                   user_id: userId, api_key: apiKey })
+        });
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok || !body.job_id) throw new Error(body.error || `Could not start the presentation (HTTP ${r.status})`);
+        return body.job_id;
+    }
+
+    async function fetchDeckFile(jobId) {
+        const r = await fetch(`${apiBase()}/deck_file?job_id=${encodeURIComponent(jobId)}`, {
+            headers: apiKey ? { 'Authorization': 'Bearer ' + apiKey } : {},
+            cache: 'no-store'
+        });
+        if (!r.ok) throw new Error('The finished presentation could not be fetched');
+        return r.blob();
+    }
+
+    // The Nextcloud page around the editor (same origin), or null.
+    function nextcloudWindow() {
+        try {
+            if (window.parent && window.parent !== window && window.parent.OC) return window.parent;
+        } catch (e) { /* another origin */ }
+        try {
+            if (window.top && window.top.OC) return window.top;
+        } catch (e) { /* another origin */ }
+        return null;
+    }
+
+    // Saves `blob` as "<baseName> – slides.pptx" (or " (2)", ...) in the
+    // folder of the open document. Returns { fileId, dir, name }.
+    async function saveFileNextToDocument(blob, baseName) {
+        const nc = nextcloudWindow();
+        let uid = '';
+        try { uid = nc && nc.OC.getCurrentUser ? nc.OC.getCurrentUser().uid : ''; } catch (e) { /* below */ }
+        if (!uid) {
+            const r = await fetch('/ocs/v2.php/cloud/user?format=json', { headers: { 'OCS-APIRequest': 'true' } });
+            if (r.ok) uid = ((await r.json()).ocs || {}).data?.id || '';
+        }
+        if (!uid) throw new Error('Could not tell which Nextcloud user is signed in');
+        let token = '';
+        try { token = (nc && nc.OC.requestToken) || ''; } catch (e) { /* below */ }
+        if (!token) {
+            const r = await fetch('/csrftoken');
+            if (r.ok) token = (await r.json()).token || '';
+        }
+        let dir = '/';
+        try {
+            const d = new URLSearchParams((nc || window.parent).location.search).get('dir');
+            if (d) dir = d;
+        } catch (e) { /* the top folder */ }
+        const davDir = dir.split('/').filter(Boolean).map(encodeURIComponent).join('/');
+        const safeBase = (baseName || 'Presentation').replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'Presentation';
+        for (let n = 1; n <= 20; n++) {
+            const name = `${safeBase} \u2013 slides${n > 1 ? ` (${n})` : ''}.pptx`;
+            const url = `/remote.php/dav/files/${encodeURIComponent(uid)}/${davDir ? davDir + '/' : ''}${encodeURIComponent(name)}`;
+            const r = await fetch(url, {
+                method: 'PUT',
+                headers: {
+                    'requesttoken': token,
+                    'If-None-Match': '*',     // never overwrite a file that is already there
+                    'Content-Type': 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+                },
+                body: blob
+            });
+            if (r.status === 412) continue;    // that name is taken: try the next
+            if (!r.ok) throw new Error(`Saving the presentation failed (HTTP ${r.status})`);
+            const fileId = parseInt(r.headers.get('OC-FileId') || '', 10);
+            return { fileId: Number.isFinite(fileId) ? fileId : null, dir, name };
+        }
+        throw new Error('Too many presentations with this name in the folder');
+    }
+
+    function presentationUrl(saved) {
+        return saved.fileId
+            ? `/apps/files/files/${saved.fileId}?dir=${encodeURIComponent(saved.dir)}&openfile=true`
+            : `/apps/files/?dir=${encodeURIComponent(saved.dir)}`;
+    }
 
 
     function stripChannelMarkers(text) {
