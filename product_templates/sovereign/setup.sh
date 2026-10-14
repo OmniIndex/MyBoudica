@@ -33,6 +33,12 @@ for v in SITE_NAME SITE_TITLE SITE_SLOGAN SITE_COLOR SITE_ACCOUNT_DOMAIN; do
     [[ -n "${!v:-}" ]] || die "$SITE_DIR/site.env does not set $v."
 done
 [[ "$SITE_NAME" =~ ^[a-z][a-z0-9]{1,30}$ ]] || die "SITE_NAME must be lowercase letters and digits."
+# Service names are also DNS names on the shared boudica_shared network, so two
+# sovereign sites on one box need different ones. The first site keeps "sov"
+# (sov-nextcloud, ...); another sets SITE_SERVICE_PREFIX in its site.env and
+# runs from its own copy of this folder (its own .env and generated/).
+SVC="${SITE_SERVICE_PREFIX:-sov}"
+[[ "$SVC" =~ ^[a-z][a-z0-9]{1,10}$ ]] || die "SITE_SERVICE_PREFIX must be 2-11 lowercase letters/digits."
 
 ask() {
     local var="$1" prompt="$2"
@@ -112,6 +118,15 @@ chmod 600 .env
 # shellcheck disable=SC1091
 source .env
 
+if [[ "$SVC" != sov ]]; then
+    # Same services under this site's own names and project, in a compose
+    # file next to the original (relative paths stay valid); .env points
+    # docker compose at it, so plain "docker compose ..." here works too.
+    sed -e "s/\bsov-/${SVC}-/g" -e "s/^name: myboudica-sovereign\$/name: myboudica-${SVC}/" \
+        docker-compose.yml > docker-compose.site.yml
+    persist COMPOSE_FILE docker-compose.site.yml
+    export COMPOSE_FILE=docker-compose.site.yml
+fi
 mkdir -p generated/nextcloud generated/collabora generated/nginx/certs generated/theme
 sed -e "s#__BOUDICA_API_ORIGIN__#${PUBLIC_BASE}#g" ../collabora/nextcloud/boudica-csp.conf > generated/nextcloud/boudica-csp.conf
 sed -e "s#__BOUDICA_API_BASE__#${PUBLIC_BASE}/api/boudica#g" ../collabora/collabora/boudica-config.js > generated/collabora/boudica-config.js
@@ -123,7 +138,7 @@ for f in logo logoheader background favicon; do
 done
 if [[ "$EXTERNAL_PROXY" != true ]]; then
     sed -e "s#__DOMAIN__#${SITE_MY_DOMAIN}#g" -e "s#__HTTPS_PORT__#${SITE_HTTPS_PORT}#g" \
-        -e "s#__API_UPSTREAM__#http://web:80#g" nginx/default.conf > generated/nginx/default.conf
+        -e "s#__API_UPSTREAM__#http://web:80#g" -e "s/\bsov-/${SVC}-/g" nginx/default.conf > generated/nginx/default.conf
     if [[ ! -f generated/nginx/certs/fullchain.pem ]]; then
         openssl req -x509 -nodes -newkey rsa:2048 -days 3650 -keyout generated/nginx/certs/privkey.pem \
             -out generated/nginx/certs/fullchain.pem -subj "/CN=${SITE_MY_DOMAIN}" \
@@ -173,15 +188,15 @@ fi
 
 # --- 5. Start ---------------------------------------------------------------------
 log "[5/7] Starting containers"
-docker compose up -d sov-redis
+docker compose up -d "${SVC}-redis"
 docker compose up -d
 echo "Waiting for Nextcloud's first-boot install..."
-until docker compose exec -u www-data -T sov-nextcloud php occ status 2>/dev/null | grep -q "installed: true"; do sleep 3; done
+until docker compose exec -u www-data -T "${SVC}-nextcloud" php occ status 2>/dev/null | grep -q "installed: true"; do sleep 3; done
 
 # --- 6. Apps ------------------------------------------------------------------------
 log "[6/7] Apps"
-occ() { docker compose exec -u www-data -T sov-nextcloud php occ "$@"; }
-docker compose exec -T sov-nextcloud chown www-data:www-data /var/www/html/custom_apps
+occ() { docker compose exec -u www-data -T "${SVC}-nextcloud" php occ "$@"; }
+docker compose exec -T "${SVC}-nextcloud" chown www-data:www-data /var/www/html/custom_apps
 
 occ app:enable boudicaai
 occ app:enable boudicacode
@@ -193,6 +208,8 @@ occ config:app:set boudicaai keycloak_realm --value="boudica"
 occ config:app:set boudicaai keycloak_client_id --value="${KC_CLIENT_ID}"
 # Only the site's own accounts may sign in here.
 occ config:app:set boudicaai login_allowed_domains --value="${SITE_ACCOUNT_DOMAIN}"
+# After "Log out", go to the site's public page instead of Keycloak's sign-in form.
+[[ -n "${SITE_URL:-}" ]] && occ config:app:set boudicaai post_logout_url --value="${SITE_URL}"
 
 # From the app store (needs internet once; the store is switched off after):
 # documents (Collabora connector), Talk, Calendar, Mail.
