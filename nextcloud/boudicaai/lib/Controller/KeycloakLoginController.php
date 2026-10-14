@@ -190,6 +190,13 @@ class KeycloakLoginController extends Controller {
             explode(',', $this->config->getAppValue('boudicaai', 'login_allowed_domains', ''))
         ));
         if ($allowedDomains !== []) {
+            // The domain only means something if Keycloak has verified the
+            // address: with self-registration on and no email check, anyone
+            // could register name@<this site's domain> and walk in.
+            if (($userinfo['email_verified'] ?? false) !== true) {
+                $this->logger->warning('Sign-in refused: email address not verified on a domain-limited site', ['app' => 'boudicaai']);
+                return $this->errorPage($this->l()->t('This site needs a verified email address. Please confirm your email address, or ask your administrator.'));
+            }
             $emailDomain = substr((string)strrchr($email, '@'), 1);
             if (!in_array($emailDomain, $allowedDomains, true)) {
                 $this->logger->warning('Sign-in refused: account domain is not allowed on this site', ['app' => 'boudicaai', 'domain' => $emailDomain]);

@@ -1,0 +1,3 @@
+# Secrets and files setup.sh writes for this box.
+.env
+generated/
