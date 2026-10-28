@@ -1217,7 +1217,6 @@
                             } else {
                                 selectedText = await getFullDocumentText('txt');
                             }
-                            selectedText = clearBoudicaCommands(selectedText);
                             lastSelectedText = selectedText;
                             
                             // Convert current document text to File object and add to send list
@@ -1246,7 +1245,6 @@
                         }
                     } else {
                         var selectedText = await fetchSelectedText();
-                        selectedText = clearBoudicaCommands(selectedText);
                         lastSelectedText = selectedText;
 
                         // Instead of appending the selected/highlighted text directly to
@@ -1558,33 +1556,6 @@
         });
     }///end downloadDocumentAsText
 
-    /** This function will ckear all Boudica commands from teh promot making sure that they do not get in teh way of teh response
-     * @param text
-     * @return text
-     */
-    function clearBoudicaCommands(text) {
-        text = text.replace(/log:/gi, ' ');
-        text = text.replace(/no memory/gi, ' ');
-        text = text.replace(/use rag/gi, ' ');
-        text = text.replace(/no rag/gi, ' ');
-        text = text.replace(/create connection/gi, ' ');
-        text = text.replace(/pdf/gi, 'p_d_f');
-        text = text.replace(/docx/gi, 'c_o_c_x');
-        text = text.replace(/xslt/gi, 'x_s_lt');
-        text = text.replace(/pptx/gi, 'p_p_tx');
-        text = text.replace(/auth/gi, ' ');
-        text = text.replace(/access/gi, ' ');
-        text = text.replace(/login/gi, 'l_o_g_in');
-        text = text.replace(/use/gi, ' ');
-        text = text.replace(/using/gi, 'us_in_g');
-        text = text.replace(/email/gi, 'e_mail');
-        text = text.replace(/connection/gi, 'co_nnecti_on');
-        text = text.replace(/calander/gi, 'ca_lan_der');
-        text = text.replace(/create/gi, 'cr_eat_e');
-        text = text.replace(/file/gi, 'f_i_l_e');
-        text = text.replace(/document/gi, 'do_c_um_ent');
-        return text;
-    }//end clearBoudicaCommands
 
     /** This function will get all of the content from the selected document
      * @returns {Promise<string>} - A promise that resolves to the full document text.
@@ -2060,8 +2031,6 @@
                 //return;
                 }   
 
-                // Boudica has a few system bits that call various app (agents) so will disable them here
-                docText = clearBoudicaCommands(docText);
 
                 const addressCount = `**This document contains:**\n- Zip Codes: ${countOccurrences(docText, /\b\d{5}(?:-\d{4})?\b/g)}\n- Bank Accounts: ${countOccurrences(docText, /\b\d{8,16}\b/g)}\n- SSNs: ${countOccurrences(docText, /\b\d{3}-\d{2}-\d{4}\b/g)}\n- NI Numbers: ${countOccurrences(docText, /\b[A-CEGHJ-PR-TW-Z]{2}\d{6}[A-D]\b/g)}\n- Credit Card Numbers: ${countOccurrences(docText, /\b\d{4}(?:[- ]?\d{4}){2,4}\b/g)}\n- Email Addresses: ${countOccurrences(docText, /\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g)}`;
 
