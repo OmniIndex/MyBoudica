@@ -1659,7 +1659,7 @@
                 if (!jobId) {
                     updateStreamingBubble(assistantBubble, '*Reading the document\u2026*');
                     const text = await downloadDocumentAsText('txt', 60000);
-                    if (!text || !text.trim()) throw new Error('The document is empty \u2013 there is nothing to make slides from.');
+                    if (!text || !text.trim()) throw new Error('The document is empty \u2013 there is nothing to make slides from. To have me write the document first, ask for example "Write a document about \u2026".');
                     jobId = await startDeckJob(text, baseName);
                     savePendingJob(jobId, 'deck');
                 }
@@ -2604,7 +2604,18 @@
         const m = /\b(create|make|build|generate|produce|turn|convert)\b(.{0,60}?)\b(presentation|slide ?deck|deck|powerpoint|pptx|slides)\b/i.exec(message || '');
         if (!m) return false;
         if (/\b(image|picture|photo|logo|icon|illustration)s?\b/i.test(message)) return false;
-        if (/\b(document|outline|summary|report|notes|plan|structure|script)\b/i.test(m[2])) return false;
+        // "a document with a presentation outline" is a document; "this document
+        // into a PowerPoint" names the source, so it is still a deck.
+        if (/(?<!\b(this|the|my|our|that)\s+)\b(document|outline|summary|report|notes|plan|structure|script)\b/i.test(m[2])) return false;
+        // "a presentation outline / script / notes" is a document about a deck.
+        if (/^\s*(outline|script|notes|plan|structure|summary)\b/i.test(message.slice(m.index + m[0].length))) return false;
+        // "Create a document about X, which I can then use to produce slides":
+        // asking for a document first makes it a document, whatever comes later.
+        const docAsk = /\b(create|make|build|generate|produce|write|draft|prepare)\b(.{0,40}?)\b(document|outline|summary|report|notes|article|brief|script)\b/ig;
+        for (const d of message.matchAll(docAsk)) {
+            if (d.index > m.index) break;
+            if (!/\b(presentation|slide ?deck|deck|powerpoint|pptx|slides)\b/i.test(d[2])) return false;
+        }
         // bare "slides" only with "into" / "from": "turn this into slides", "slides from this"
         if (/^slides$/i.test(m[3]) && !/\b(into|from)\b/i.test(message)) return false;
         return true;
