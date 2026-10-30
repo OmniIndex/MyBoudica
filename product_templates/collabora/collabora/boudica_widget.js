@@ -1672,7 +1672,8 @@
                 const blob = await fetchDeckFile(jobId);
                 const saved = await saveFileNextToDocument(blob, baseName);
                 updateStreamingBubble(assistantBubble,
-                    (summary || 'Your presentation is ready.') + `\n\nSaved as **${saved.name}** in ${saved.dir === '/' ? 'your top folder' : saved.dir}.`);
+                    (summary || 'Your presentation is ready.') + `\n\nSaved as **${saved.name}** in ${saved.dir === '/' ? 'your top folder' : saved.dir}.`
+                    + (saved.fallbackFrom ? `\n\nIt could not be saved next to your document in ${saved.fallbackFrom} (${saved.fallbackReason}), so it is in your top folder instead.` : ''));
                 const contentDiv = assistantBubble.querySelector('.boudica-message-content');
                 if (contentDiv) {
                     const bar = document.createElement('div');
@@ -2682,26 +2683,47 @@
             const d = new URLSearchParams((nc || window.parent).location.search).get('dir');
             if (d) dir = d;
         } catch (e) { /* the top folder */ }
-        const davDir = dir.split('/').filter(Boolean).map(encodeURIComponent).join('/');
         const safeBase = (baseName || 'Presentation').replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'Presentation';
-        for (let n = 1; n <= 20; n++) {
-            const name = `${safeBase} \u2013 slides${n > 1 ? ` (${n})` : ''}.pptx`;
-            const url = `/remote.php/dav/files/${encodeURIComponent(uid)}/${davDir ? davDir + '/' : ''}${encodeURIComponent(name)}`;
-            const r = await fetch(url, {
-                method: 'PUT',
-                headers: {
-                    'requesttoken': token,
-                    'If-None-Match': '*',     // never overwrite a file that is already there
-                    'Content-Type': 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
-                },
-                body: blob
-            });
-            if (r.status === 412) continue;    // that name is taken: try the next
-            if (!r.ok) throw new Error(`Saving the presentation failed (HTTP ${r.status})`);
-            const fileId = parseInt(r.headers.get('OC-FileId') || '', 10);
-            return { fileId: Number.isFinite(fileId) ? fileId : null, dir, name };
+        // Writes into one folder; returns { fileId, dir, name } or throws.
+        async function putInto(folder) {
+            const davDir = folder.split('/').filter(Boolean).map(encodeURIComponent).join('/');
+            for (let n = 1; n <= 20; n++) {
+                const name = `${safeBase} \u2013 slides${n > 1 ? ` (${n})` : ''}.pptx`;
+                const url = `/remote.php/dav/files/${encodeURIComponent(uid)}/${davDir ? davDir + '/' : ''}${encodeURIComponent(name)}`;
+                const r = await fetch(url, {
+                    method: 'PUT',
+                    headers: {
+                        'requesttoken': token,
+                        'If-None-Match': '*',     // never overwrite a file that is already there
+                        'Content-Type': 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+                    },
+                    body: blob
+                });
+                if (r.status === 412) continue;    // that name is taken: try the next
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                const fileId = parseInt(r.headers.get('OC-FileId') || '', 10);
+                return { fileId: Number.isFinite(fileId) ? fileId : null, dir: folder, name };
+            }
+            throw new Error('too many presentations with this name in the folder');
         }
-        throw new Error('Too many presentations with this name in the folder');
+        // Some folders refuse new files from the browser (on 2026-10-30 the
+        // "Boudica AI Knowledge Base" mount answered 404 although the document
+        // itself saved there). The finished deck is never thrown away: it goes
+        // to the top folder instead, and the caller says so.
+        try {
+            return await putInto(dir);
+        } catch (e) {
+            if (dir === '/') throw new Error(`Saving the presentation failed (${e.message})`);
+            console.warn('Boudica: saving next to the document failed, using the top folder:', e);
+            try {
+                const saved = await putInto('/');
+                saved.fallbackFrom = dir;
+                saved.fallbackReason = e.message;
+                return saved;
+            } catch (e2) {
+                throw new Error(`Saving the presentation failed (next to the document: ${e.message}; top folder: ${e2.message})`);
+            }
+        }
     }
 
     function presentationUrl(saved) {
