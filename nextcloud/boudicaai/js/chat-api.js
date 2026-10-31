@@ -222,6 +222,8 @@ class ChatAPI {
             formData.append('temperature', localStorage.getItem('boudica_temperature') || '0.8');
             formData.append('max_tokens', localStorage.getItem('boudica_max_tokens') || '35000');
             formData.append('use_rag', localStorage.getItem('boudica_use_rag') || 'true');
+            if (options?.verbatim_rag) formData.append('verbatim_rag', 'true');
+            if (options?.private) formData.append('private', 'true');
 
             files.forEach((fileItem, index) => {
                 formData.append(`document_${index}`, fileItem.file);
@@ -366,7 +368,8 @@ class ChatAPI {
             temperature: parseFloat(localStorage.getItem('boudica_temperature') || '0.8'),
             max_tokens: parseInt(localStorage.getItem('boudica_max_tokens') || '35000'),
             use_rag: useRagEnabled,
-            verbatim_rag: options?.verbatim_rag || false
+            verbatim_rag: options?.verbatim_rag || false,
+            private: options?.private || false
         };
         
         // Auto-set rag_source_type=system_log for log/syslog analysis queries

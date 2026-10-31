@@ -487,7 +487,7 @@ async function processAudioFiles(queuedFiles) {
 /**
  * Handle sending a message
  */
-async function handleSendMessage(chatId, message) {
+async function handleSendMessage(chatId, message, options = null) {
     try {
         // Check for built-in slash commands before anything else
         if (await handleSlashCommand(chatId, message)) return;
@@ -622,7 +622,8 @@ async function handleSendMessage(chatId, message) {
                     }
                 }
             },
-            queuedFiles.length > 0 ? queuedFiles : null
+            queuedFiles.length > 0 ? queuedFiles : null,
+            options
         );
         
         // If not streaming (fallback)

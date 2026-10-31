@@ -503,8 +503,9 @@ class ChatUI {
         const verbatimCheckbox = document.getElementById('verbatimCheckbox');
         const isVerbatim = verbatimCheckbox && verbatimCheckbox.checked;
         
-        // Add "Keep private" suffix if checkbox is checked
-        const finalContent = isPrivate ? content + ' Keep private' : content;
+        // Private is sent as a request flag (the server marks the audit row
+        // private); it used to add the words "Keep private" to the message.
+        const finalContent = content;
         
         // Record the sent prompt in history (skip duplicates of the immediately preceding entry)
         if (content && (this._promptHistory.length === 0 ||
@@ -523,7 +524,7 @@ class ChatUI {
         
         // Trigger send callback FIRST (it will handle scheduled actions and normal messages)
         if (this.onSendMessage) {
-            this.onSendMessage(this.currentChatId, finalContent, { verbatim_rag: isVerbatim });
+            this.onSendMessage(this.currentChatId, finalContent, { verbatim_rag: isVerbatim, private: isPrivate });
         }
         
         // Hide welcome screen
