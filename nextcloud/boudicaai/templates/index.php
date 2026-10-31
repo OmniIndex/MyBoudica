@@ -724,7 +724,7 @@ Util::addStyle(OCA\BoudicaAi\AppInfo\Application::APP_ID, 'boudicaai-main');
                     <div class="faq-item">
                         <button class="faq-question" aria-expanded="false">Can I copy or export a response?</button>
                         <div class="faq-answer">
-                            <p>Yes. Each response has action buttons (copy, thumbs up/down, etc.) that appear when you hover over the message. Use the <strong>copy</strong> button to copy the raw text. If Boudica returns an HTML response, the <strong>HTML Preview</strong> panel opens automatically and you can <strong>Print</strong> or <strong>Save</strong> it from that panel.</p>
+                            <p>Yes. Each response has action buttons (copy, print, resend, star rating, toggle view) that appear when you hover over the message. Use the <strong>copy</strong> button to copy the raw text. If Boudica returns an HTML response, the <strong>HTML Preview</strong> panel opens automatically and you can <strong>Print</strong> or <strong>Save</strong> it from that panel.</p>
                         </div>
                     </div>
                 </div>
@@ -767,7 +767,7 @@ Util::addStyle(OCA\BoudicaAi\AppInfo\Application::APP_ID, 'boudicaai-main');
                     <div class="faq-item">
                         <button class="faq-question" aria-expanded="false">What does the Private checkbox do?</button>
                         <div class="faq-answer">
-                            <p>Ticking <strong>Private</strong> before sending a message marks that message so it is not included in any shared or audited logs. Private messages are still stored locally for your own reference but are excluded from usage analytics and collaborative contexts.</p>
+                            <p>Ticking <strong>Private</strong> before sending a message marks that message private. A private message is left out when Boudica recalls earlier conversations, and its answer is never reused for anyone else. It is still kept in your chat history and in the audit log your administrators can see.</p>
                         </div>
                     </div>
                     <div class="faq-item">
@@ -1127,7 +1127,7 @@ Util::addStyle(OCA\BoudicaAi\AppInfo\Application::APP_ID, 'boudicaai-main');
                     <div class="faq-item">
                         <button class="faq-question" aria-expanded="false">Who can see my conversations?</button>
                         <div class="faq-answer">
-                            <p>Conversations are associated with your authenticated user account and are stored in the server database. Access to the database is restricted to authorised administrators. Normal users cannot read each other's conversations. Use the <strong>Private</strong> checkbox to flag messages that should be excluded from usage audit logs.</p>
+                            <p>Conversations are associated with your authenticated user account and are stored in the server database. Access to the database is restricted to authorised administrators. Normal users cannot read each other's conversations. Use the <strong>Private</strong> checkbox to keep a message out of Boudica's memory of earlier conversations.</p>
                         </div>
                     </div>
                     <div class="faq-item">

@@ -1,534 +1,94 @@
 # Boudica AI User Guide
 
-This guide explains how to use Boudica AI from three places:
+**Version 2.0, October 2026** (replaces the August 2026 guide)
 
-1. Nextcloud Talk
-2. The Boudica AI Nextcloud app
-3. Collabora Online Office
+This is a short guide to using Boudica in three places in MyBoudica:
 
-It focuses only on user flows and commands.
+1. The **Boudica AI** app (the chat)
+2. **Talk** (chat rooms and calls)
+3. Documents in **MyBoudica Office** (Collabora Online)
 
-## 1. Nextcloud Talk
+For more detail on the chat, see the "Boudica AI in MyBoudica: User Guide" (NEXTCLOUD_BOUDICA_USER_GUIDE.md).
 
-Use Boudica in Talk by mentioning `boudica` or `@boudica` in a room message. Boudica replies in the same conversation.
+## 1. The Boudica AI App
 
-You do not need a slash command. Write a normal message that includes Boudica's name.
+### Opening it
 
-### Basic Flow
+1. Sign in to MyBoudica with your organisation account.
+2. Click **Boudica AI** in the top bar.
 
-1. Open a Nextcloud Talk conversation.
-2. Type a message that includes `boudica` or `@boudica`.
-3. Add the question or task after the name.
-4. Send the message.
-5. Read Boudica's answer in the Talk thread.
+There is no separate password. To sign out, sign out of MyBoudica.
 
-Example:
+### Asking a question
 
-```text
-@boudica what did we decide about the launch plan?
-```
+1. Type in the message box ("Send a message to Boudica...").
+2. Press **Enter** to send (**Shift + Enter** adds a new line).
 
-If you type only `@boudica`, Boudica asks what you would like help with.
+Boudica searches your organisation's knowledge base for every question; you do not need to type anything special. When it answers from your documents it names its sources. When it finds nothing relevant, it says so and answers from general knowledge.
 
-### General Questions
+While Boudica works you see short waiting words. Click **Stop** to cancel a long answer.
 
-Use Boudica for normal assistant questions inside a Talk room.
+### Useful buttons
 
-Examples:
+| Where | Button | What it does |
+|---|---|---|
+| Sidebar | **New Chat** | Starts a new conversation (or type `/new`) |
+| Sidebar | **Chats** | Your saved conversations; double-click a title to rename it |
+| Header | **Agents** | Run an agent, or create your own |
+| Header | **Connected Services** | Link your email, calendar and other accounts |
+| Header | **Knowledge Base** | Upload documents for your whole organisation |
+| Message bar | **Private** | The message is left out when Boudica recalls earlier conversations, and its answer is never reused for anyone else |
+| Message bar | **Verbatim** | Boudica answers only with exact quotes from your documents |
+| Message bar | Paperclip | Attach files to this message (up to 50 MB each) |
+| Message bar | Microphone | Speak your message; it is sent when you stop |
+| Under an answer | Stars | Rate the answer from 1 (Poor) to 5 (Excellent) |
 
-```text
-@boudica explain the options we discussed
-boudica help me draft a reply to this conversation
-@boudica what are the open questions here?
-boudica turn this discussion into action items
-@boudica write a short follow-up message for the team
-```
+### Adding documents Boudica can answer from
 
-### Summarize a Talk Conversation
+- **Just for you:** open **Files** in MyBoudica, open the folder **Boudica AI Knowledge Base**, and upload or move your documents into it.
+- **For your organisation:** in Boudica AI, click **Knowledge Base** in the header, open the **public** folder and click **Upload files**.
 
-Ask Boudica to summarize recent Talk activity.
+New documents are usually ready within a minute or two.
 
-Examples:
+## 2. Talk
 
-```text
-@boudica summarize today
-boudica summarize the last hour
-@boudica summarize the last 3 hours
-boudica summarize this morning
-@boudica summarize this afternoon
-boudica summarize all day
-```
+Boudica answers in a Talk conversation only when the Boudica bot is switched on for it and a message mentions `@boudica`. A moderator switches the bot on in the conversation's **Settings** → **Bots**.
 
-Useful variations:
+| You write | Boudica does |
+|---|---|
+| `@boudica what is our travel expenses policy?` | Answers the question |
+| `@boudica summarise today` | Summarises what was written today (without a period: the last hour) |
+| `@boudica summarize call` | Summarises a recorded call, from its transcript |
+| `@boudica what's on my calendar tomorrow?` | Reads your calendar |
+| `@boudica find emails from Sam about the budget` | Searches your email |
+| `@boudica track <label>` / `@boudica stop` / `@boudica replay` | Records the conversation's messages, stops, and shows them again |
 
-```text
-@boudica what decisions were made today?
-boudica summarize the action items from the last hour
-@boudica give me a brief recap of this morning
-boudica what did I miss today?
-```
+Plain `boudica` without the `@` is not answered. Talk may be switched off on some MyBoudica sites.
 
-### Calendar Requests
+## 3. Documents (MyBoudica Office)
 
-Use calendar words such as `calendar`, `schedule`, `events`, or `appointments`.
+### Opening the assistant
 
-Examples:
+1. Open a document from **Files**.
+2. Click the round Boudica button at the edge of the document window (**Open Boudica Assistant**).
+3. Type in the panel and press **Enter**.
 
-```text
-@boudica calendar today
-boudica summarize my events this week
-@boudica what is on my schedule tomorrow?
-boudica show my appointments this month
-@boudica summarize today's calendar
-```
+### What you can ask
 
-Supported time phrases include:
+| You type | What happens |
+|---|---|
+| "Summarise section 4 in plain English" | The answer appears in the panel; the document is not changed |
+| `find "budget forecast"` | Every match is highlighted in the document |
+| "Write a one-page document about …" (in a **new, blank** document) | Boudica writes the document. **This replaces everything in the open document.** |
+| "Make a presentation from this document" | Boudica makes a slide deck and saves it next to the document as "<document name> – slides.pptx" |
 
-- `today`
-- `tomorrow`
-- `this week`
-- `this month`
+Under each answer in the panel, click **Insert at cursor**, **New paragraph** or **Append to end** to put it in the document. You can also type "insert the last response".
 
-### Email Requests
+At the top of the panel:
+- **Add File** gives Boudica another file to work from.
+- **PII Data** counts possible personal data in the document, such as email addresses, card numbers and National Insurance numbers. It doesn't change anything.
+- The mode menu sets how much of a long document Boudica reads. **Document Mode** reads the most.
 
-Use `email` or `mail` in the message.
+## Getting help
 
-Examples:
-
-```text
-@boudica email from finance this month
-boudica summarize my mail from yesterday
-@boudica do I have any emails from Sarah today?
-boudica find email about budget this week
-@boudica summarize recent mail from support
-```
-
-Supported time phrases include:
-
-- `last hour`
-- `last 2 hours`
-- `this morning`
-- `this afternoon`
-- `today`
-- `yesterday`
-- `this week`
-- `last week`
-- `this month`
-
-### Shared Files in Talk
-
-If someone shares a file in Talk and Boudica sees the message, Boudica can refer to the shared file by name in its understanding of the conversation.
-
-Example:
-
-```text
-@boudica summarize what was shared and what we need to do next
-```
-
-### Useful Talk Command Patterns
-
-Use these patterns as starting points:
-
-```text
-@boudica summarize [time period]
-@boudica what did we decide about [topic]?
-@boudica list action items from [time period]
-@boudica calendar [time period]
-@boudica summarize my events [time period]
-@boudica email from [person/team] [time period]
-@boudica find mail about [topic]
-@boudica draft a response to [topic]
-```
-
-## 2. Boudica AI Nextcloud App
-
-The Boudica AI app is the main Boudica workspace inside Nextcloud. Open it from the Nextcloud navigation by selecting `Boudica Ai`.
-
-The app gives you a central place for chat, documents, email assistance, calendar assistance, settings, and related Boudica tools.
-
-### Basic Flow
-
-1. Open Nextcloud.
-2. Select `Boudica Ai` from the app navigation.
-3. Choose the area you want to use: Home, Chat, Documents, Emails, Calendar, or Settings.
-4. Enter your question, upload or select content if needed, and review the answer.
-
-### Home
-
-Use Home as the launch point for the main Boudica workflows.
-
-Common actions:
-
-- Open Chat for direct questions.
-- Open Documents for document analysis.
-- Open Emails for email assistance.
-- Open Calendar for event assistance.
-- Open Settings for user preferences.
-
-### Chat
-
-Use Chat for direct questions and working sessions with Boudica.
-
-Examples:
-
-```text
-Summarize this idea in plain English
-Draft a response to this customer question
-Create a checklist for onboarding a new user
-Turn these notes into a project update
-Explain the tradeoffs between these two options
-```
-
-Useful chat flows:
-
-1. Ask an initial question.
-2. Review the response.
-3. Ask a follow-up question.
-4. Refine the answer until it is ready to use.
-
-Example flow:
-
-```text
-Draft a project update for the migration work
-Make it shorter
-Add risks and next steps
-Make it suitable for executives
-```
-
-### Documents
-
-Use Documents for document-centered work such as analysis, summarization, and retrieval-assisted questions.
-
-Examples:
-
-```text
-Summarize this document
-What are the key risks in this file?
-Extract the action items
-Turn this document into an FAQ
-Create a short executive summary
-Compare this document with the previous version
-```
-
-Useful document flows:
-
-1. Open the Documents area.
-2. Select or upload the document you want Boudica to use.
-3. Ask a question about the document.
-4. Review the answer.
-5. Ask follow-up questions to refine the output.
-
-### Emails
-
-Use Emails for mail-related assistance.
-
-Examples:
-
-```text
-Summarize my recent emails
-Find emails about the renewal
-What messages need a reply?
-Draft a response to the latest customer email
-Summarize emails from finance this week
-List urgent items from today's mail
-```
-
-Useful email flows:
-
-1. Open the Emails area.
-2. Ask about a sender, topic, or time period.
-3. Review the summary or draft.
-4. Refine the response before sending or copying it.
-
-### Calendar
-
-Use Calendar for schedule and event assistance.
-
-Examples:
-
-```text
-Summarize my calendar today
-What meetings do I have tomorrow?
-What should I prepare for this week?
-List my appointments this month
-Create a briefing for today's meetings
-```
-
-Useful calendar flows:
-
-1. Open the Calendar area.
-2. Ask about a time period.
-3. Review the event summary.
-4. Ask for preparation notes, risks, conflicts, or follow-up actions.
-
-### Settings
-
-Use Settings for user preferences and app behavior visible inside the Boudica app.
-
-Typical user-level settings may include display preferences, notification options, and integration preferences depending on the deployed version.
-
-### Useful App Command Patterns
-
-Use these patterns in the app chat or relevant app area:
-
-```text
-Summarize [document/email/calendar period]
-Find [topic/person/term]
-Draft [message/reply/update]
-Create [checklist/summary/report/FAQ]
-Explain [topic] for [audience]
-Rewrite this for [tone/audience]
-List action items from [source]
-What should I do next about [topic]?
-```
-
-### Working Style Tips
-
-Ask Boudica for the outcome you want, not only the source material.
-
-Instead of:
-
-```text
-Look at this
-```
-
-Use:
-
-```text
-Summarize this for an executive audience and include risks, decisions, and next steps
-```
-
-Instead of:
-
-```text
-Help with email
-```
-
-Use:
-
-```text
-Draft a polite reply that confirms receipt, asks for the missing attachment, and says I will respond by Friday
-```
-
-## 3. Collabora Online Office
-
-The Collabora integration lets you use Boudica directly while editing office documents. You can ask about the open document, summarize selected text, summarize the whole document, find text, generate new content, and insert Boudica's response into the document.
-
-### Basic Flow
-
-1. Open a document in Collabora Online.
-2. Open the Boudica floating chat widget.
-3. Type a question or command.
-4. Review the streaming response.
-5. Optionally insert the response into the document.
-
-### Common Commands
-
-Examples:
-
-```text
-Summarize this document
-Summarize this section
-What are the action items in this document?
-Find "budget forecast"
-Rewrite this section in a more formal tone
-Create a short executive summary for this document
-Insert the last response
-```
-
-### Ask About Selected Text
-
-Use this when you want Boudica to work only with highlighted content.
-
-Flow:
-
-1. Highlight text in the document.
-2. Open the Boudica widget.
-3. Ask about `this section`, `this paragraph`, `the selection`, or `selected text`.
-4. Review the response.
-5. Insert or copy the response if needed.
-
-Examples:
-
-```text
-Summarize this section
-Rewrite the selected paragraph for a legal audience
-Make this highlighted text shorter
-Turn this section into bullet points
-Explain this paragraph in plain English
-Translate this selected text into customer-friendly language
-```
-
-### Ask About the Whole Document
-
-Use this when you want Boudica to read the full open document.
-
-Examples:
-
-```text
-Summarize this document
-What risks are in the document?
-Create an FAQ from the document
-Draft a project brief using this document
-List all action items in this document
-What are the main decisions in this document?
-Create an executive summary of this document
-```
-
-### Find Text in the Document
-
-Use `find` to highlight matching text in the open document.
-
-Examples:
-
-```text
-Find budget forecast
-Find "Q4 revenue"
-Find all instances of compliance review in this document
-Find renewal date
-Find customer escalation
-```
-
-When you use a find command, Boudica highlights matching occurrences in the document instead of sending the request to the AI model.
-
-### Generate New Content
-
-Use Boudica to create new text that you can insert into the document.
-
-Examples:
-
-```text
-Create a short introduction for a board report
-Draft a conclusion for this document
-Write a professional summary of the selected points
-Create a table of action items from this section
-Draft a customer-facing explanation of this proposal
-Create a follow-up email based on this document
-```
-
-Flow:
-
-1. Place your cursor where you may want the content to go.
-2. Ask Boudica to create the content.
-3. Review the answer in the widget.
-4. Ask Boudica to insert the response if you want it added to the document.
-
-### Insert Responses into the Document
-
-After Boudica generates an answer, you can ask it to insert the answer into the document at your cursor position.
-
-Examples:
-
-```text
-Insert the last response
-Insert this response
-Insert the first answer
-Insert the last answer
-```
-
-Recommended flow:
-
-1. Click where you want the text to appear.
-2. Ask Boudica to generate the content.
-3. Review the response.
-4. Type `Insert the last response`.
-
-### Summarize an Entire Document
-
-Flow:
-
-1. Open the document in Collabora Online.
-2. Open the Boudica widget.
-3. Type `Summarize this document`.
-4. Wait for the response.
-5. Optionally type `Insert the last response`.
-
-### Summarize Selected Text
-
-Flow:
-
-1. Highlight the text you want summarized.
-2. Open the Boudica widget.
-3. Type `Summarize this section`.
-4. Review the response.
-5. Insert or copy it if needed.
-
-### Rewrite Selected Text
-
-Flow:
-
-1. Highlight the text you want rewritten.
-2. Ask for the tone or audience you want.
-3. Review the response.
-4. Insert the response if it is ready.
-
-Examples:
-
-```text
-Rewrite this section for executives
-Make this paragraph more concise
-Rewrite the selected text in a warmer tone
-Make this more formal
-Turn this into plain English
-```
-
-### Spreadsheet Commands
-
-Use document-level commands when working with spreadsheets.
-
-Examples:
-
-```text
-Summarize this spreadsheet
-What trends are visible in this document?
-Find "total revenue"
-Explain the key numbers in this spreadsheet
-Create a summary of the rows in this sheet
-```
-
-### Presentation Commands
-
-Use document-level commands when working with presentations.
-
-Examples:
-
-```text
-Summarize this presentation
-Create speaker notes for this document
-What are the main points in this deck?
-Draft an executive summary of this presentation
-Find "roadmap"
-```
-
-### Useful Collabora Command Patterns
-
-Use these patterns in the Boudica widget:
-
-```text
-Summarize this document
-Summarize this section
-Rewrite this section for [audience]
-Make this selected text [shorter/more formal/clearer]
-Create [intro/conclusion/summary/checklist] from this document
-Find "[term]"
-Insert the last response
-```
-
-### Best Flow for Document Editing
-
-For most editing tasks:
-
-1. Select the text or place your cursor.
-2. Ask Boudica for a specific output.
-3. Review the response.
-4. Ask for changes if needed.
-5. Insert the final response.
-
-Example:
-
-```text
-Rewrite this selected paragraph for a customer update
-Make it shorter
-Add a clear next step
-Insert the last response
-```
+Ask Boudica itself, for example "How do I rename a chat?" or "How do I make a slide deck from a document?". The step-by-step "How do I…?" guides are available to every user. In Boudica AI, **Help & FAQ** in the header answers questions about the chat screen. For anything else, contact your administrator.
