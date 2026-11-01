@@ -80,12 +80,63 @@
         return m ? `${m.icon} ${m.label}` : esc(svc.provider || svc.service_name);
     }
 
-    // Friendly display name: prefer service_name with underscores → spaces, title-cased
+    // What each kind of service is called and what it lets Boudica do (2026-11-01).
+    // Registrations are named by admins ("glb_gcalander"), and that name used to be
+    // shown as-is ("Glb Gcalander"), with nothing saying what connecting it does.
+    const SERVICE_INFO = [
+        { re: /gmail/i,              name: 'Gmail',           what: 'Boudica can read your email (it cannot send or delete anything).',     ask: 'Do I have any unread emails?' },
+        { re: /calen|gcal/i,         name: 'Google Calendar', what: 'Boudica can read your calendars (it cannot add or change events).',    ask: "What's on my calendar tomorrow?" },
+        { re: /outlook/i,            name: 'Outlook',         what: 'Boudica can read your Outlook email.',                                  ask: 'Any emails from Sarah this week?' },
+        { re: /g_?drive|google.?drive/i, name: 'Google Drive', what: 'Boudica can search the files in your Google Drive.',                  ask: 'Find the budget spreadsheet in my Google Drive' },
+        { re: /sharepoint|onedrive/i, name: 'SharePoint / OneDrive', what: 'Boudica can search your SharePoint and OneDrive files.',        ask: 'Search SharePoint for the travel policy' },
+        { re: /github/i,             name: 'GitHub',          what: 'Boudica can search your GitHub repositories.',                          ask: 'Search GitHub for the login code' },
+        { re: /gitlab/i,             name: 'GitLab',          what: 'Boudica can read your GitLab projects.',                                ask: 'Get the code from the GitLab project website' },
+        { re: /slack/i,              name: 'Slack',           what: 'Boudica can search your Slack messages.',                               ask: 'Search Slack for the release date' },
+        { re: /dropbox/i,            name: 'Dropbox',         what: 'Boudica can list and search your Dropbox files.',                       ask: 'What is in my Dropbox?' },
+    ];
+    function serviceInfo(svc) {
+        const key = `${svc.service_name || ''} ${svc.provider || ''}`;
+        return SERVICE_INFO.find(i => i.re.test(svc.service_name || '')) || SERVICE_INFO.find(i => i.re.test(key)) || null;
+    }
+
+    // Friendly display name: the service's real name when known, otherwise the
+    // registration name without its "glb_" prefix, underscores to spaces, title-cased.
     function displayName(svc) {
-        return svc.service_name
+        const info = serviceInfo(svc);
+        if (info) return info.name;
+        return (svc.service_name || '')
+            .replace(/^glb[_-]/i, '')
             .replace(/[-_]/g, ' ')
             .replace(/\b\w/g, c => c.toUpperCase());
     }
+
+    // A message at the top of the overlay (errors used to go to the console only).
+    function showServicesMessage(text, isError) {
+        const list = document.getElementById('servicesList');
+        if (!list || !list.parentNode) { if (text) alert(text); return; }
+        let box = document.getElementById('servicesMessage');
+        if (!box) {
+            box = document.createElement('div');
+            box.id = 'servicesMessage';
+            box.setAttribute('role', 'status');
+            box.style.margin = '0 0 10px';
+            box.style.padding = '8px 10px';
+            box.style.borderRadius = '6px';
+            box.style.fontSize = '0.9em';
+            list.parentNode.insertBefore(box, list);
+        }
+        if (!text) { box.style.display = 'none'; box.textContent = ''; return; }
+        box.textContent = text;
+        box.style.display = 'block';
+        box.style.background = isError ? 'rgba(220, 53, 69, 0.12)' : 'rgba(40, 167, 69, 0.12)';
+        box.style.color = 'inherit';
+    }
+    // Display name for a service_name (connect/disconnect messages).
+    function serviceLabel(serviceName) {
+        const app = _apps.find(a => a.service_name === serviceName);
+        return displayName(app || { service_name: serviceName });
+    }
+
 
     // ── State ─────────────────────────────────────────────────────────────────
     let _apps      = [];   // registered apps from server
@@ -190,10 +241,19 @@
     // ── Render ────────────────────────────────────────────────────────────────
     function renderServices(list) {
         if (!list) return;
+        // Two registrations of the same service (ts-1 has "glb_gdrive" and "gdrive")
+        // would show the same name: add the registration name to tell them apart.
+        const nameCount = {};
+        _apps.forEach(a => { const n = displayName(a); nameCount[n] = (nameCount[n] || 0) + 1; });
         list.innerHTML = _apps.map(app => {
             const connected = !!_connected[app.service_name];
-            const name      = displayName(app);
+            const baseName  = displayName(app);
+            const name      = nameCount[baseName] > 1 ? `${baseName} (${app.service_name})` : baseName;
             const provider  = providerLabel(app);
+            const info      = serviceInfo(app);
+            const help      = info
+                ? `<span class="service-desc" style="display:block;font-size:0.82em;opacity:0.8;margin-top:2px">${esc(info.what)} Try: “${esc(info.ask)}”</span>`
+                : '';
 
             return `
                 <div class="service-item ${connected ? 'service-connected' : 'service-disconnected'}"
@@ -201,6 +261,7 @@
                     <div class="service-info">
                         <span class="service-provider">${provider}</span>
                         <span class="service-name">${esc(name)}</span>
+                        ${help}
                     </div>
                     <div class="service-actions">
                         ${connected
@@ -248,6 +309,7 @@
             if (!data.auth_url) {
                 if (_oauthPopup) _oauthPopup.close();
                 console.error('OAuth start error:', data.error || 'No auth_url returned');
+                showServicesMessage(`Couldn't start connecting ${serviceLabel(serviceName)}: ${data.error || 'the server gave no sign-in address'}. Please try again, or ask your administrator.`, true);
                 return;
             }
 
@@ -262,22 +324,29 @@
         } catch (err) {
             if (_oauthPopup) _oauthPopup.close();
             console.error('OAuth start fetch error:', err);
+            showServicesMessage(`Couldn't reach the server to connect ${serviceLabel(serviceName)}. Please check your connection and try again.`, true);
             return;
         }
+        showServicesMessage('', false);
 
-        // Poll until the popup closes, then refresh status
-        const poll = setInterval(() => {
+        // Poll until the popup closes, then refresh status and say how it went
+        const poll = setInterval(async () => {
             if (!_oauthPopup || _oauthPopup.closed) {
                 clearInterval(poll);
                 _oauthPopup = null;
-                loadServices();   // refresh statuses
+                await loadServices();   // refresh statuses
+                if (_connected[serviceName]) {
+                    showServicesMessage(`${serviceLabel(serviceName)} is connected.`, false);
+                } else {
+                    showServicesMessage(`${serviceLabel(serviceName)} is not connected. If the sign-in window showed an error or you closed it early, try Connect again.`, true);
+                }
             }
         }, 800);
     }
 
     // ── Disconnect ────────────────────────────────────────────────────────────
     async function disconnect(serviceName) {
-        if (!confirm(`Disconnect from ${serviceName}? You can reconnect at any time.`)) return;
+        if (!confirm(`Disconnect ${serviceLabel(serviceName)}? Boudica will stop reading it. You can reconnect at any time.`)) return;
 
         const base   = getApiBase();
         const userId = getUserId();
@@ -295,7 +364,7 @@
             updateBadge();
         } catch (err) {
             console.error('Disconnect error:', err);
-            alert('Failed to disconnect: ' + err.message);
+            showServicesMessage(`Couldn't disconnect ${serviceLabel(serviceName)}: ${err.message}`, true);
         }
     }
 
