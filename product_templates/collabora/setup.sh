@@ -335,6 +335,19 @@ log "[4/7] Rendering config"
 
 mkdir -p generated/nextcloud generated/collabora generated/janus generated/signaling \
          generated/eturnal generated/nginx/certs
+# PHP limits for Nextcloud (PHP2Shell CVE-2026-109618 / -109619 hardening,
+# 2026-10-22), mounted by docker-compose.yml. Written once; an existing file
+# is kept. Without it Docker would mount an empty folder and the limits would
+# be missing.
+[[ -f generated/nextcloud/zz-php2shell.ini ]] || cat > generated/nextcloud/zz-php2shell.ini <<'INI'
+; PHP2Shell (CVE-2026-109618 / CVE-2026-109619) hardening, kept on purpose.
+; 1G because the Text app needs ~800 MB; the container's mem_limit is the cap.
+memory_limit = 1G
+max_input_nesting_level = 16
+max_multipart_body_parts = 500
+max_input_vars = 1000
+max_file_uploads = 20
+INI
 
 sed -e "s#__BOUDICA_API_ORIGIN__#${BOUDICA_API_ORIGIN}#g" \
     nextcloud/boudica-csp.conf > generated/nextcloud/boudica-csp.conf

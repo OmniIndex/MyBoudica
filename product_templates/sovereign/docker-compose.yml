@@ -26,6 +26,7 @@ services:
 
   sov-nextcloud:
     image: git.omniindex.io:5050/omniindex/boudica-collabora/nextcloud:latest
+    mem_limit: 8g   # PHP2Shell interim mitigation 2026-10-21, with zz-php2shell.ini (memory_limit=-1)
     depends_on: [sov-redis]  # postgres is external/shared (boudica_slm's)
     environment:
       POSTGRES_HOST: postgres
@@ -51,6 +52,7 @@ services:
       - ../../nextcloud/boudicacode:/var/www/html/custom_apps/boudicacode
       - ../../nextcloud/boudicadashboard:/var/www/html/custom_apps/boudicadashboard
       - ./generated/nextcloud/boudica-csp.conf:/etc/apache2/conf-available/boudica-csp.conf:ro
+      - ./generated/nextcloud/zz-php2shell.ini:/usr/local/etc/php/conf.d/zz-php2shell.ini:ro
       - ./generated/theme:/opt/site-theme:ro
     extra_hosts:
       # Nextcloud fetches Collabora's discovery document from its own public
