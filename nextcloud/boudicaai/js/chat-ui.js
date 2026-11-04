@@ -337,7 +337,9 @@ class ChatUI {
                 const messageId = messageDiv.getAttribute('data-message-id');
                 console.log('MessageId:', messageId);
                 
-                if (action === 'copy') {
+                if (action === 'listen') {
+                    this.handleListen(messageDiv, actionBtn);
+                } else if (action === 'copy') {
                     this.handleCopyMessage(messageId, actionBtn);
                 } else if (action === 'rate') {
                     console.log('Calling handleRateMessage');
@@ -354,6 +356,99 @@ class ChatUI {
                 }
             }
         });
+    }
+
+    // ── Read aloud (2026-11-04) ───────────────────────────────────────────
+    // A Listen button on every answer, shown when Boudica's server voice is on
+    // (/speech/info lists its languages). The server reads the answer from the
+    // audit log by its audit_id for the signed-in user, rewrites it as it is
+    // said and speaks it (in the organisation's recorded voice, if an admin
+    // set one in the admin console's Voice tab: labelled as an AI voice).
+    _speechInfo() {
+        if (!this._speechInfoPromise) {
+            const base = (this.api && this.api.apiBase) || '/api/boudica';
+            const headers = (this.api && this.api._authHeaders) ? this.api._authHeaders() : {};
+            this._speechInfoPromise = fetch(`${base}/speech/info`, { headers, cache: 'no-store' })
+                .then(r => r.ok ? r.json() : {}).catch(() => ({}));
+        }
+        return this._speechInfoPromise;
+    }
+
+    _offerListen(actionsDiv) {
+        const btn = actionsDiv.querySelector('[data-action="listen"]');
+        if (!btn) return;
+        this._speechInfo().then(info => {
+            if (Array.isArray(info.languages) && info.languages.length) btn.hidden = false;
+        });
+    }
+
+    _listenNote(messageDiv, text) {
+        const actions = messageDiv.querySelector('.message-actions');
+        if (!actions) return;
+        let note = actions.querySelector('.listen-note');
+        if (!note) {
+            note = document.createElement('span');
+            note.className = 'listen-note';
+            note.setAttribute('aria-live', 'polite');
+            note.style.cssText = 'align-self:center;font-size:var(--font-size-xs,0.75rem);color:var(--text-tertiary);';
+            const label = actions.querySelector('.ai-generated-label');
+            actions.insertBefore(note, label || null);
+        }
+        note.textContent = text || '';
+    }
+
+    async handleListen(messageDiv, btn) {
+        const label = btn.querySelector('.listen-label');
+        const idle = () => { btn.disabled = false; if (label) label.textContent = 'Listen'; btn.setAttribute('aria-pressed', 'false'); };
+        if (this._listening) {
+            const same = this._listening.btn === btn;
+            this._listening.stop();
+            if (same) return;
+        }
+        const auditId = messageDiv.getAttribute('data-audit-id');
+        if (!auditId) { this._listenNote(messageDiv, 'Please wait until the answer is finished.'); return; }
+        let audio = null, url = null, stopped = false;
+        const me = {
+            btn,
+            stop: () => {
+                stopped = true;
+                if (audio) { audio.pause(); audio.src = ''; }
+                if (url) URL.revokeObjectURL(url);
+                idle();
+                if (this._listening === me) this._listening = null;
+            }
+        };
+        this._listening = me;
+        btn.disabled = true;
+        if (label) label.textContent = 'Getting it ready…';
+        this._listenNote(messageDiv, '');
+        try {
+            const base = (this.api && this.api.apiBase) || '/api/boudica';
+            const headers = { 'Content-Type': 'application/json',
+                              ...((this.api && this.api._authHeaders) ? this.api._authHeaders() : {}) };
+            const res = await fetch(`${base}/speak`, { method: 'POST', headers,
+                                                       body: JSON.stringify({ audit_id: String(auditId) }) });
+            if (!res.ok) {
+                const d = await res.json().catch(() => ({}));
+                throw new Error(d.error || 'Sorry, that couldn\'t be read aloud just now.');
+            }
+            const blob = await res.blob();
+            if (stopped) return;
+            url = URL.createObjectURL(blob);
+            audio = new Audio(url);
+            audio.onended = () => me.stop();
+            audio.onerror = () => me.stop();
+            btn.disabled = false;
+            if (label) label.textContent = 'Stop';
+            btn.setAttribute('aria-pressed', 'true');
+            // A real person's recorded voice is always said (EU AI Act Art. 50).
+            const info = await this._speechInfo();
+            if (info.voice) this._listenNote(messageDiv, `AI voice based on ${info.voice}'s voice`);
+            await audio.play();
+        } catch (e) {
+            this._listenNote(messageDiv, e.message);
+            me.stop();
+        }
     }
 
     /**
@@ -670,6 +765,13 @@ class ChatUI {
                     </svg>
                     Copy
                 </button>
+                <button class="btn btn-message-action" title="Read this answer aloud" data-action="listen" hidden>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+                        <path d="M15.54 8.46a5 5 0 0 1 0 7.07M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+                    </svg>
+                    <span class="listen-label">Listen</span>
+                </button>
                 <button class="btn btn-message-action" title="Toggle between formatted view and code view" data-action="toggle-view">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <polyline points="16 18 22 12 16 6"></polyline>
@@ -695,6 +797,7 @@ class ChatUI {
                       style="margin-left: auto; align-self: center; font-size: var(--font-size-xs, 0.75rem); color: var(--text-tertiary);">AI-generated</span>
             `;
             messageDiv.appendChild(actionsDiv);
+            this._offerListen(actionsDiv);
 
             // For HTML content type, insert a "View in Panel" button before the toggle-view button
             const contentType = contentDiv.getAttribute('data-content-type');
