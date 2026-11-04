@@ -29,6 +29,7 @@ services:
 
   nextcloud:
     image: git.omniindex.io:5050/omniindex/boudica-collabora/nextcloud:latest
+    mem_limit: 8g   # PHP2Shell interim mitigation 2026-10-21, with zz-php2shell.ini (memory_limit=-1)
     build:
       context: ./nextcloud
       args:
@@ -77,6 +78,7 @@ services:
       # this path) - shared with the janus service below.
       - janus_recordings:/mnt/janus-recordings:ro
       - ./generated/nextcloud/boudica-csp.conf:/etc/apache2/conf-available/boudica-csp.conf:ro
+      - ./generated/nextcloud/zz-php2shell.ini:/usr/local/etc/php/conf.d/zz-php2shell.ini:ro
       # Prototype 2026-09-09: exposes the multiuser stack's shared RAG
       # corpus root (product_templates/multiuser's BOUDICA_MULTIUSER_CORPUS_DIR,
       # host default /var/boudica/corpus_multiuser) so Nextcloud's

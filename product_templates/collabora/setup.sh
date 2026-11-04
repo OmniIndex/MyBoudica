@@ -58,19 +58,37 @@ fi
 
 # --- 1. Collect deployment details -------------------------------------------
 
+# Unattended installs (boudica_slm's installer/setup.sh) set
+# BOUDICA_UNATTENDED=1 and pass every answer below as an environment
+# variable of the same name - nothing is then read from the terminal. A
+# variable that is set but empty counts as a blank answer (e.g. no SMTP
+# relay). Interactive runs are unchanged.
+ask() {
+    local var="$1" prompt="$2"
+    if [[ "${BOUDICA_UNATTENDED:-0}" == 1 ]]; then
+        [[ -n "${!var+x}" ]] || die "Unattended install: ${var} is not set."
+        return 0
+    fi
+    if [[ "${3:-}" == secret ]]; then
+        read -rsp "$prompt" "$var"
+    else
+        read -rp "$prompt" "$var"
+    fi
+}
+
 log "[2/7] Deployment details"
 
-read -rp "Primary domain browsers will reach this box on (e.g. myboudica.com - DNS for \
-this, talk.<domain>, and whiteboard.<domain> must all point here): " BOUDICA_DOMAIN
+ask BOUDICA_DOMAIN "Primary domain browsers will reach this box on (e.g. myboudica.com - DNS for \
+this, talk.<domain>, and whiteboard.<domain> must all point here): "
 [[ -n "$BOUDICA_DOMAIN" ]] || die "A domain is required."
 
-read -rp "Nextcloud admin username [admin]: " NEXTCLOUD_ADMIN_USER
+ask NEXTCLOUD_ADMIN_USER "Nextcloud admin username [admin]: "
 NEXTCLOUD_ADMIN_USER="${NEXTCLOUD_ADMIN_USER:-admin}"
 
-read -rp "HTTP port [80] (only change this if something else on this box already \
-uses 80/443): " BOUDICA_HTTP_PORT
+ask BOUDICA_HTTP_PORT "HTTP port [80] (only change this if something else on this box already \
+uses 80/443): "
 BOUDICA_HTTP_PORT="${BOUDICA_HTTP_PORT:-80}"
-read -rp "HTTPS port [443]: " BOUDICA_HTTPS_PORT
+ask BOUDICA_HTTPS_PORT "HTTPS port [443]: "
 BOUDICA_HTTPS_PORT="${BOUDICA_HTTPS_PORT:-443}"
 
 # Two supported deployment shapes. Self-contained (default): this stack's
@@ -85,21 +103,21 @@ BOUDICA_HTTPS_PORT="${BOUDICA_HTTPS_PORT:-443}"
 # comment). Answering yes here does NOT configure that host proxy itself -
 # it only stops this stack from fighting it for ports 80/443 and TLS
 # ownership; the proxy-side config is a separate, later step.
-read -rp "Does this box already have its own reverse proxy (Apache/nginx) that will \
-terminate TLS for ${BOUDICA_DOMAIN}? [y/N]: " EXTERNAL_PROXY_ANSWER
+ask EXTERNAL_PROXY_ANSWER "Does this box already have its own reverse proxy (Apache/nginx) that will \
+terminate TLS for ${BOUDICA_DOMAIN}? [y/N]: "
 case "${EXTERNAL_PROXY_ANSWER,,}" in
     y|yes) EXTERNAL_PROXY="true" ;;
     *)     EXTERNAL_PROXY="false" ;;
 esac
 
 if [[ "$EXTERNAL_PROXY" == "true" ]]; then
-    read -rp "Loopback port for Nextcloud [8082]: " BOUDICA_NEXTCLOUD_LOCAL_PORT
+    ask BOUDICA_NEXTCLOUD_LOCAL_PORT "Loopback port for Nextcloud [8082]: "
     BOUDICA_NEXTCLOUD_LOCAL_PORT="${BOUDICA_NEXTCLOUD_LOCAL_PORT:-8082}"
-    read -rp "Loopback port for Collabora [8083]: " BOUDICA_COLLABORA_LOCAL_PORT
+    ask BOUDICA_COLLABORA_LOCAL_PORT "Loopback port for Collabora [8083]: "
     BOUDICA_COLLABORA_LOCAL_PORT="${BOUDICA_COLLABORA_LOCAL_PORT:-8083}"
-    read -rp "Loopback port for the Talk signaling server [8084]: " BOUDICA_SIGNALING_LOCAL_PORT
+    ask BOUDICA_SIGNALING_LOCAL_PORT "Loopback port for the Talk signaling server [8084]: "
     BOUDICA_SIGNALING_LOCAL_PORT="${BOUDICA_SIGNALING_LOCAL_PORT:-8084}"
-    read -rp "Loopback port for Whiteboard [8085]: " BOUDICA_WHITEBOARD_LOCAL_PORT
+    ask BOUDICA_WHITEBOARD_LOCAL_PORT "Loopback port for Whiteboard [8085]: "
     BOUDICA_WHITEBOARD_LOCAL_PORT="${BOUDICA_WHITEBOARD_LOCAL_PORT:-8085}"
 else
     BOUDICA_NEXTCLOUD_LOCAL_PORT="8082"
@@ -116,8 +134,8 @@ fi
 # rather than baked in). Answering no (the default) preserves the original
 # "build everything locally" behavior for a dev/trial box with no pushed
 # images to pull.
-read -rp "Pull pre-built images from the registry instead of building them on this box? \
-[y/N]: " PULL_ONLY_ANSWER
+ask PULL_ONLY_ANSWER "Pull pre-built images from the registry instead of building them on this box? \
+[y/N]: "
 case "${PULL_ONLY_ANSWER,,}" in
     y|yes) PULL_ONLY="true" ;;
     *)     PULL_ONLY="false" ;;
@@ -130,7 +148,7 @@ esac
 # actually lives elsewhere (a split-out medium/large deployment, or
 # pointing at the SaaS deliberately).
 DEFAULT_API_ENDPOINT="https://${BOUDICA_DOMAIN}:${BOUDICA_HTTPS_PORT}/api/boudica/chat"
-read -rp "Boudica inference API endpoint [${DEFAULT_API_ENDPOINT}]: " BOUDICA_API_ENDPOINT
+ask BOUDICA_API_ENDPOINT "Boudica inference API endpoint [${DEFAULT_API_ENDPOINT}]: "
 BOUDICA_API_ENDPOINT="${BOUDICA_API_ENDPOINT:-$DEFAULT_API_ENDPOINT}"
 # Stashed because `source .env` below unconditionally reassigns this same
 # variable name from whatever was persisted on a previous run, silently
@@ -147,8 +165,8 @@ BOUDICA_API_ORIGIN="$(echo "$BOUDICA_API_ENDPOINT" | sed -E 's#^(https?://[^/]+)
 # derivation PageController::index() does server-side for the other 3 apps.
 BOUDICA_API_BASE="$(echo "$BOUDICA_API_ENDPOINT" | sed -E 's#/chat/?$##')"
 
-read -rp "Public IP or hostname this box's TURN relay advertises to browsers (leave \
-blank to auto-detect via ifconfig.me): " TURN_PUBLIC_IP
+ask TURN_PUBLIC_IP "Public IP or hostname this box's TURN relay advertises to browsers (leave \
+blank to auto-detect via ifconfig.me): "
 if [[ -z "$TURN_PUBLIC_IP" ]]; then
     TURN_PUBLIC_IP="$(curl -s -m 5 ifconfig.me || true)"
     [[ -n "$TURN_PUBLIC_IP" ]] || die "Could not auto-detect a public IP - pass one explicitly."
@@ -176,15 +194,15 @@ OS firewall (ufw/iptables) AND your cloud provider's network security group if i
     - 49152-65535/udp       (eturnal's TURN relay range - see eturnal.yml's relay_min/max_port)
   Confirm both layers now if this box has a cloud firewall/security group - a call that lets \
 both participants answer but never actually connects is the exact symptom of this being missed."
-read -rp "Press Enter once the above ports are confirmed open (or Ctrl-C to stop and fix first): " _
+[[ "${BOUDICA_UNATTENDED:-0}" == 1 ]] || read -rp "Press Enter once the above ports are confirmed open (or Ctrl-C to stop and fix first): " _
 
-read -rp "SMTP relay host for outbound mail (e.g. smtp.gmail.com:587 - leave blank to \
-disable outbound mail for now): " SMTP_RELAYHOST
+ask SMTP_RELAYHOST "SMTP relay host for outbound mail (e.g. smtp.gmail.com:587 - leave blank to \
+disable outbound mail for now): "
 if [[ -n "$SMTP_RELAYHOST" ]]; then
-    read -rp "SMTP relay username (leave blank if this relay doesn't need auth): " SMTP_RELAYHOST_USERNAME
+    ask SMTP_RELAYHOST_USERNAME "SMTP relay username (leave blank if this relay doesn't need auth): "
     if [[ -n "$SMTP_RELAYHOST_USERNAME" ]]; then
-        read -rsp "SMTP relay password (for Gmail, use an App Password, not your \
-regular account password): " SMTP_RELAYHOST_PASSWORD
+        ask SMTP_RELAYHOST_PASSWORD "SMTP relay password (for Gmail, use an App Password, not your \
+regular account password): " secret
         echo
     fi
 fi
@@ -210,7 +228,7 @@ else
     MAIL_FROM_DOMAIN="${BOUDICA_DOMAIN}"
 fi
 
-read -rp "Whisper model size (tiny/base/small/medium/large-v3) [base]: " WHISPER_MODEL
+ask WHISPER_MODEL "Whisper model size (tiny/base/small/medium/large-v3) [base]: "
 WHISPER_MODEL="${WHISPER_MODEL:-base}"
 
 # --- 2. Generate secrets ------------------------------------------------------
@@ -404,7 +422,7 @@ echo "This stack shares boudica_slm's own Postgres and Keycloak instances rather
 running its own (see docker-compose.yml) - both need boudica_slm's own credentials once \
 per run (found in ITS OWN .env, NOT this stack's - a genuinely separate product's \
 secrets, not something this script can know on its own)."
-read -rsp "boudica_slm's BOUDICA_DBA_PASSWORD: " BOUDICA_SLM_DBA_PASSWORD
+ask BOUDICA_SLM_DBA_PASSWORD "boudica_slm's BOUDICA_DBA_PASSWORD: " secret
 echo
 [[ -n "$BOUDICA_SLM_DBA_PASSWORD" ]] || die "That password is required to create this stack's database."
 
@@ -422,8 +440,13 @@ echo
 # do that itself on a genuinely fresh install. Worth a follow-up lockdown
 # script later, mirroring boudica_slm's own 07-lock-down-boudislm-role.sh,
 # once oc_admin reliably exists - not done in this pass.
-docker run --rm --network boudica_shared -e PGPASSWORD="$BOUDICA_SLM_DBA_PASSWORD" \
-    postgres:17 psql -h postgres -U boudislm_dba -d postgres -v ON_ERROR_STOP=0 <<SQL
+# -i: the SQL comes on stdin (here-document). Without it psql got an empty
+# script and silently did nothing, so on a fresh shared Postgres the role was
+# never created and CREATE DATABASE below failed ("role nextcloud does not
+# exist" - first fresh Developer Edition install, 2026-11-04). Hosts set up
+# before had the role already.
+docker run --rm -i --network boudica_shared -e PGPASSWORD="$BOUDICA_SLM_DBA_PASSWORD" \
+    postgres:17 psql -h postgres -U boudislm_dba -d postgres -v ON_ERROR_STOP=1 <<SQL
 DO \$\$
 BEGIN
    IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'nextcloud') THEN
@@ -453,10 +476,10 @@ docker run --rm --network boudica_shared -e PGPASSWORD="$BOUDICA_SLM_DBA_PASSWOR
 # already-running deployment, and it's a different repo's file besides.
 # Same reach-into-the-other-stack's-already-running-service pattern as the
 # Postgres role/database above.
-read -rp "Public URL browsers use to reach boudica_slm's Keycloak (its own .env's \
-KEYCLOAK_URL, e.g. http://<host>:8081): " BOUDICA_KEYCLOAK_PUBLIC_URL
+ask BOUDICA_KEYCLOAK_PUBLIC_URL "Public URL browsers use to reach boudica_slm's Keycloak (its own .env's \
+KEYCLOAK_URL, e.g. http://<host>:8081): "
 [[ -n "$BOUDICA_KEYCLOAK_PUBLIC_URL" ]] || die "boudica_slm's Keycloak URL is required for Nextcloud login."
-read -rsp "boudica_slm's KEYCLOAK_ADMIN_PASSWORD: " BOUDICA_SLM_KEYCLOAK_ADMIN_PASSWORD
+ask BOUDICA_SLM_KEYCLOAK_ADMIN_PASSWORD "boudica_slm's KEYCLOAK_ADMIN_PASSWORD: " secret
 echo
 [[ -n "$BOUDICA_SLM_KEYCLOAK_ADMIN_PASSWORD" ]] || die "That password is required to register this stack's Keycloak client."
 
