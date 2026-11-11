@@ -543,6 +543,10 @@ Util::addStyle(OCA\BoudicaAi\AppInfo\Application::APP_ID, 'boudicaai-main');
             <label for="actionTimeInput">Time</label>
             <input type="time" id="actionTimeInput" class="rule-form-control action-time-input" />
         </div>
+        <div class="rule-form-group">
+            <label for="actionRepeatInput">Or repeat every (minutes)</label>
+            <input type="number" id="actionRepeatInput" class="rule-form-control action-time-input" min="2" step="1" inputmode="numeric" placeholder="Empty = run once at the time above" />
+        </div>
         <div class="rule-overlay-actions">
             <button id="saveActionBtn" class="btn btn-primary">Save</button>
             <button id="cancelActionBtn" class="btn btn-secondary">Cancel</button>

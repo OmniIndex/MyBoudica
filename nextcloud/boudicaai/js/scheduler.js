@@ -8,6 +8,9 @@ class Scheduler {
         this.storage = storage;
         this.api = api;
         this.timers = new Map();
+        // Actions whose run has not finished yet: a repeating Action never
+        // starts again on top of itself when the server is slow (2026-11-11).
+        this.running = new Set();
         this.actionsList = document.getElementById('actionsList');
         
         // Scheduling patterns to detect
@@ -105,9 +108,23 @@ class Scheduler {
     async executeAction(actionId) {
         const action = this.storage.getScheduledAction(actionId);
         if (!action) return;
-        
+        if (this.running.has(actionId)) return;
+        this.running.add(actionId);
+
         console.log(`Executing scheduled action: ${action.prompt}`);
-        
+
+        // Repeating Actions (2026-11-11): remember when this run started (so
+        // the next one waits its interval, also in another tab of this browser)
+        // and tell the server when the last GOOD run started, so email
+        // searches only see mail that arrived since. A failed run leaves that
+        // time alone, so its mail is looked at again next time.
+        const startedAt = Date.now();
+        const repeating = this._repeatMinutes(action.scheduleText) > 0;
+        const options = {};
+        if (repeating && action.lastGoodRunAt) options.mail_since = Math.floor(action.lastGoodRunAt / 1000);
+        action.lastRunAt = startedAt;
+        this.storage.updateScheduledAction(action);
+
         try {
             // Execute the prompt through the API (using a special chat ID that won't be saved)
             let fullResponse = '';
@@ -117,6 +134,7 @@ class Scheduler {
                 (content, isDone) => {
                     fullResponse = content;
                     if (isDone) {
+                        action.lastGoodRunAt = startedAt;
                         // Save the FULL response (not truncated)
                         action.responses.unshift({
                             content: fullResponse,
@@ -133,7 +151,8 @@ class Scheduler {
                         this.renderActions();
                     }
                 },
-                null // No files
+                null, // No files
+                options
             );
         } catch (error) {
             console.error('Error executing scheduled action:', error);
@@ -145,7 +164,22 @@ class Scheduler {
             });
             this.storage.updateScheduledAction(action);
             this.renderActions();
+        } finally {
+            this.running.delete(actionId);
         }
+    }
+
+    /**
+     * Minutes between runs for a repeating Action ("run every 5 minutes",
+     * "run every 2 hours on mon tue"), or 0 for one that runs at a time of day.
+     * Never less than MIN_REPEAT_MINUTES: each run uses the shared model.
+     */
+    _repeatMinutes(scheduleText) {
+        const m = String(scheduleText || '').match(/\b(?:every|each)\s+(\d+)\s*(minutes?|mins?|hours?|hrs?)\b/i);
+        if (!m) return 0;
+        let minutes = parseInt(m[1], 10);
+        if (/^h/i.test(m[2])) minutes *= 60;
+        return Math.max(Scheduler.MIN_REPEAT_MINUTES, minutes);
     }
     
     /**
@@ -188,7 +222,25 @@ class Scheduler {
         
         const now = new Date();
         const scheduleText = action.scheduleText.toLowerCase();
-        
+
+        // Repeating Action (2026-11-11): run once the interval has passed
+        // since the last run (or since it was made), on the chosen days if
+        // any. Before this, "every 2 minutes" fell through to the time-of-day
+        // check below, which read the 2 as an hour: it ran at 02:00 once a day.
+        const repeatMinutes = this._repeatMinutes(scheduleText);
+        if (repeatMinutes > 0) {
+            const dayMatch = scheduleText.match(/\b(mon|tue|wed|thu|fri|sat|sun)\b/i);
+            if (dayMatch) {
+                const days = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+                if (!new RegExp('\\b' + days[now.getDay()] + '\\b').test(scheduleText)) return;
+            }
+            const last = action.lastRunAt || Date.parse(action.createdAt) || 0;
+            // The check runs once a minute, so allow half a minute early
+            // rather than slipping a whole minute late every time.
+            if (now.getTime() - last >= repeatMinutes * 60000 - 30000) this.executeAction(actionId);
+            return;
+        }
+
         // Parse time from schedule
         const timeMatch = scheduleText.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
         if (!timeMatch) return;
@@ -241,6 +293,18 @@ class Scheduler {
         }
     }
     
+    /**
+     * Start again from the Actions now in storage (2026-11-11). The scheduler
+     * is created before sign-in finishes, when storage still has no user and
+     * so no Actions; app.js calls this once the user is known and their
+     * synced settings are loaded. Before this, after any page load Actions
+     * were stored but neither listed nor run.
+     */
+    reloadActions() {
+        for (const id of Array.from(this.timers.keys())) this.stopActionTimer(id);
+        this.initializeActions();
+    }
+
     /**
      * Initialize all saved actions and start their timers
      */
@@ -489,10 +553,12 @@ class Scheduler {
         const dayBoxes    = overlay.querySelectorAll('input[name="actionDay"]');
 
         const titleInput  = document.getElementById('actionTitleInput');
+        const repeatInput = document.getElementById('actionRepeatInput');
 
         // Reset form
         dayBoxes.forEach(cb => cb.checked = false);
         if (titleInput) titleInput.value = '';
+        if (repeatInput) repeatInput.value = '';
         promptInput.value = '';
         timeInput.value   = '09:00';
         editIdInput.value = '';
@@ -507,12 +573,15 @@ class Scheduler {
                 promptInput.value    = action.prompt;
 
                 const st = action.scheduleText.toLowerCase();
+                const repeatMinutes = this._repeatMinutes(st);
+                if (repeatInput && repeatMinutes > 0) repeatInput.value = String(repeatMinutes);
                 // Restore time
                 const tMatch = st.match(/(\d{1,2}(?::\d{2})?\s*(?:am|pm))/i);
                 if (tMatch) timeInput.value = this._to24h(tMatch[1]);
 
-                // Restore days
-                if (st.includes('daily') || st.includes('every day') || st.includes('each day')) {
+                // Restore days (a repeating Action with no days named runs every day)
+                if (st.includes('daily') || st.includes('every day') || st.includes('each day') ||
+                    (repeatMinutes > 0 && !/\b(mon|tue|wed|thu|fri|sat|sun)\b/.test(st))) {
                     dayBoxes.forEach(cb => cb.checked = true);
                 } else {
                     dayBoxes.forEach(cb => {
@@ -522,6 +591,7 @@ class Scheduler {
             }
         }
 
+        this._syncRepeatState();
         overlay.classList.remove('hidden');
         const ti = document.getElementById('actionTitleInput');
         if (ti) ti.focus(); else promptInput.focus();
@@ -545,12 +615,19 @@ class Scheduler {
         const prompt    = (document.getElementById('actionPromptInput').value || '').trim();
         const timeValue = document.getElementById('actionTimeInput').value;
         const dayBoxes  = overlay.querySelectorAll('input[name="actionDay"]:checked');
+        const repeatInput = document.getElementById('actionRepeatInput');
+        const repeatRaw   = repeatInput ? repeatInput.value.trim() : '';
+        const repeatMinutes = repeatRaw === '' ? 0 : parseInt(repeatRaw, 10);
 
         if (!prompt) {
             document.getElementById('actionPromptInput').focus();
             return;
         }
-        if (!timeValue) {
+        if (repeatRaw !== '' && !(repeatMinutes >= Scheduler.MIN_REPEAT_MINUTES)) {
+            repeatInput.focus();
+            return;
+        }
+        if (!repeatMinutes && !timeValue) {
             document.getElementById('actionTimeInput').focus();
             return;
         }
@@ -565,9 +642,15 @@ class Scheduler {
         const selectedDays = Array.from(dayBoxes).map(cb => cb.value);
         const allDays    = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
         const isDaily    = selectedDays.length === 7 && allDays.every(d => selectedDays.includes(d));
-        const scheduleText = isDaily
-            ? `run daily at ${timeStr}`
-            : `run ${selectedDays.join(' ')} at ${timeStr}`;
+        let scheduleText;
+        if (repeatMinutes) {
+            const every = `run every ${repeatMinutes} minute${repeatMinutes === 1 ? '' : 's'}`;
+            scheduleText = isDaily ? every : `${every} on ${selectedDays.join(' ')}`;
+        } else {
+            scheduleText = isDaily
+                ? `run daily at ${timeStr}`
+                : `run ${selectedDays.join(' ')} at ${timeStr}`;
+        }
 
         if (editId) {
             // Update existing action
@@ -604,6 +687,8 @@ class Scheduler {
 
         if (saveBtn)   saveBtn.addEventListener('click',   () => this.saveActionFromOverlay());
         if (cancelBtn) cancelBtn.addEventListener('click', () => this.closeActionOverlay());
+        const repeatInput = document.getElementById('actionRepeatInput');
+        if (repeatInput) repeatInput.addEventListener('input', () => this._syncRepeatState());
 
         // Shortcut buttons
         if (weekdaysBtn) weekdaysBtn.addEventListener('click', () => {
@@ -641,6 +726,16 @@ class Scheduler {
     }
 
     /**
+     * A repeat interval replaces the time of day: grey the time box out.
+     */
+    _syncRepeatState() {
+        const repeatInput = document.getElementById('actionRepeatInput');
+        const timeInput   = document.getElementById('actionTimeInput');
+        if (!repeatInput || !timeInput) return;
+        timeInput.disabled = repeatInput.value.trim() !== '';
+    }
+
+    /**
      * Format timestamp for display
      */
     formatTime(timestamp) {
@@ -671,6 +766,9 @@ class Scheduler {
         return div.innerHTML;
     }
 }
+
+// Shortest gap a repeating Action may have, in minutes.
+Scheduler.MIN_REPEAT_MINUTES = 2;
 
 // Export for use in other modules
 window.Scheduler = Scheduler;

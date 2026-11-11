@@ -224,6 +224,8 @@ class ChatAPI {
             formData.append('use_rag', localStorage.getItem('boudica_use_rag') || 'true');
             if (options?.verbatim_rag) formData.append('verbatim_rag', 'true');
             if (options?.private) formData.append('private', 'true');
+            // A repeating Action's last good run (scheduler.js): mail since then only.
+            if (options?.mail_since) formData.append('mail_since', String(options.mail_since));
 
             files.forEach((fileItem, index) => {
                 formData.append(`document_${index}`, fileItem.file);
@@ -371,6 +373,8 @@ class ChatAPI {
             verbatim_rag: options?.verbatim_rag || false,
             private: options?.private || false
         };
+        // A repeating Action's last good run (scheduler.js): mail since then only.
+        if (options?.mail_since) requestBody.mail_since = String(options.mail_since);
         
         // Auto-set rag_source_type=system_log for log/syslog analysis queries
         const logQueryPattern = /\b(log|logs|syslog|system log|error log|access log|audit log|journal|journald)\b/i;

@@ -219,6 +219,13 @@ async function handleAuthSuccess(user) {
             console.warn('Failed to load remote user settings:', error);
         }
 
+        // Actions: the scheduler started before sign-in, when storage had no
+        // user and so no Actions. Show and start the user's Actions now,
+        // including ones synced from another browser (2026-11-11).
+        if (app.scheduler && typeof app.scheduler.reloadActions === 'function') {
+            app.scheduler.reloadActions();
+        }
+
         // Load all user-scoped data now that identity is confirmed.
         // These are called here (and only here) — initializeApp() must NOT call
         // them directly to avoid double-firing with a missing user_id.
