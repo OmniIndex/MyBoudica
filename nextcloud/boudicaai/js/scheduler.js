@@ -64,12 +64,13 @@ class Scheduler {
     /**
      * Add a new scheduled action
      */
-    addAction(prompt, scheduleText, title) {
+    addAction(prompt, scheduleText, title, keepResponses) {
         const action = {
             id: Date.now().toString(),
             title: title || '',
             prompt: prompt,
             scheduleText: scheduleText,
+            keepResponses: Scheduler.keepCount(keepResponses),
             createdAt: new Date().toISOString(),
             responses: []
         };
@@ -142,10 +143,8 @@ class Scheduler {
                             timestamp: new Date().toISOString()
                         });
                         
-                        // Keep only last 10 responses
-                        if (action.responses.length > 10) {
-                            action.responses = action.responses.slice(0, 10);
-                        }
+                        // Keep only the newest results (the Action's own setting)
+                        this._trimResponses(action);
                         
                         this.storage.updateScheduledAction(action);
                         this.renderActions();
@@ -162,6 +161,7 @@ class Scheduler {
                 timestamp: new Date().toISOString(),
                 isError: true
             });
+            this._trimResponses(action);
             this.storage.updateScheduledAction(action);
             this.renderActions();
         } finally {
@@ -182,6 +182,17 @@ class Scheduler {
         return Math.max(Scheduler.MIN_REPEAT_MINUTES, minutes);
     }
     
+    /**
+     * Drop all but the newest results: the Action's "Keep the last" setting
+     * (2026-11-11; it was a fixed 10, which a repeating Action fills fast).
+     */
+    _trimResponses(action) {
+        const keep = Scheduler.keepCount(action.keepResponses);
+        if (Array.isArray(action.responses) && action.responses.length > keep) {
+            action.responses = action.responses.slice(0, keep);
+        }
+    }
+
     /**
      * Truncate response to first 100 characters for display
      */
@@ -559,6 +570,8 @@ class Scheduler {
         dayBoxes.forEach(cb => cb.checked = false);
         if (titleInput) titleInput.value = '';
         if (repeatInput) repeatInput.value = '';
+        const keepInput = document.getElementById('actionKeepInput');
+        if (keepInput) keepInput.value = String(Scheduler.DEFAULT_KEEP);
         promptInput.value = '';
         timeInput.value   = '09:00';
         editIdInput.value = '';
@@ -575,6 +588,7 @@ class Scheduler {
                 const st = action.scheduleText.toLowerCase();
                 const repeatMinutes = this._repeatMinutes(st);
                 if (repeatInput && repeatMinutes > 0) repeatInput.value = String(repeatMinutes);
+                if (keepInput) keepInput.value = String(Scheduler.keepCount(action.keepResponses));
                 // Restore time
                 const tMatch = st.match(/(\d{1,2}(?::\d{2})?\s*(?:am|pm))/i);
                 if (tMatch) timeInput.value = this._to24h(tMatch[1]);
@@ -623,6 +637,13 @@ class Scheduler {
             document.getElementById('actionPromptInput').focus();
             return;
         }
+        const keepInput = document.getElementById('actionKeepInput');
+        const keepRaw   = keepInput ? keepInput.value.trim() : '';
+        const keepValue = keepRaw === '' ? Scheduler.DEFAULT_KEEP : parseInt(keepRaw, 10);
+        if (keepInput && !(keepValue >= 1 && keepValue <= Scheduler.MAX_KEEP)) {
+            keepInput.focus();
+            return;
+        }
         if (repeatRaw !== '' && !(repeatMinutes >= Scheduler.MIN_REPEAT_MINUTES)) {
             repeatInput.focus();
             return;
@@ -660,12 +681,14 @@ class Scheduler {
                 action.title        = title;
                 action.prompt       = prompt;
                 action.scheduleText = scheduleText;
+                action.keepResponses = keepValue;
+                this._trimResponses(action);
                 this.storage.updateScheduledAction(action);
                 this.startActionTimer(editId, false);
             }
         } else {
             // Create new action
-            this.addAction(prompt, scheduleText, title);
+            this.addAction(prompt, scheduleText, title, keepValue);
         }
 
         this.renderActions();
@@ -769,6 +792,14 @@ class Scheduler {
 
 // Shortest gap a repeating Action may have, in minutes.
 Scheduler.MIN_REPEAT_MINUTES = 2;
+
+// How many results an Action keeps (newest first): its own setting, else 10.
+Scheduler.DEFAULT_KEEP = 10;
+Scheduler.MAX_KEEP = 100;
+Scheduler.keepCount = function (v) {
+    const n = parseInt(v, 10);
+    return n >= 1 && n <= Scheduler.MAX_KEEP ? n : Scheduler.DEFAULT_KEEP;
+};
 
 // Export for use in other modules
 window.Scheduler = Scheduler;
