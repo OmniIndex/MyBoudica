@@ -6,5 +6,6 @@
     document.addEventListener('DOMContentLoaded', () => {
         BoudicaCode.AgentManager.init();
         BoudicaCode.AgentManager.loadAgents();
+        if (BoudicaCode.FlowBuilder) BoudicaCode.FlowBuilder.init();
     });
 })(window);

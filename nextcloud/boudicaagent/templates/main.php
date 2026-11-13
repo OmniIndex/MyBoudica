@@ -41,6 +41,7 @@ if (!empty($_['boudica_provisioned_key'])) {
 script('boudicaagent', 'src/core/agentAuth');
 script('boudicaagent', 'src/core/agentApi');
 script('boudicaagent', 'src/agent/agentManager');
+script('boudicaagent', 'src/flow/flowBuilder');
 script('boudicaagent', 'src/main');
 ?>
 
@@ -53,6 +54,14 @@ script('boudicaagent', 'src/main');
                     <h1>Agents</h1>
                     <span id="agentsCountLabel" class="agents-count-label hidden"></span>
                 </div>
+                <div class="agent-header-actions">
+                <button id="flowOpenBtn" class="btn btn-secondary" title="Build a flow by dragging steps: read, look up, decide, tell someone">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="3" y="3" width="7" height="5" rx="1"></rect><rect x="14" y="16" width="7" height="5" rx="1"></rect>
+                        <path d="M6.5 8v4.5a2 2 0 0 0 2 2h7a2 2 0 0 1 2 2V16"></path>
+                    </svg>
+                    Flow builder
+                </button>
                 <button id="agentCreateBtn" class="btn btn-primary">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <line x1="12" y1="5" x2="12" y2="19"></line>
@@ -60,6 +69,7 @@ script('boudicaagent', 'src/main');
                     </svg>
                     New Agent
                 </button>
+                </div>
             </div>
 
             <section class="agent-section">
@@ -120,6 +130,45 @@ script('boudicaagent', 'src/main');
             </div>
         </div>
 
+        <!-- ── Flow builder (Action Flows, 2026-11-13: js/src/flow/flowBuilder.js) ── -->
+        <div id="flowBuilderPanel" class="fb-panel hidden">
+            <div class="agent-builder-header">
+                <button id="flowBackBtn" class="btn btn-icon" title="Back" aria-label="Back">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"></polyline></svg>
+                </button>
+                <h2>Flow builder</h2>
+                <div class="fb-head-actions">
+                    <select id="flowPicker" class="agent-builder-input fb-picker" aria-label="Open a flow"></select>
+                    <button id="flowNewBtn" class="btn btn-secondary">New flow</button>
+                    <button id="flowSaveBtn" class="btn btn-primary">Save flow</button>
+                </div>
+            </div>
+            <div id="flowCopyBanner" class="fb-banner hidden"></div>
+            <div id="flowError" class="agent-builder-error hidden"></div>
+            <div id="flowNote" class="fb-note hidden"></div>
+            <div class="fb-meta">
+                <div><label class="fb-label">Name <span class="fb-help-inline">(used as @name)</span></label>
+                     <input id="flowName" class="agent-builder-input" placeholder="e.g. order-query"></div>
+                <div><label class="fb-label">Title</label>
+                     <input id="flowDisplayName" class="agent-builder-input" placeholder="e.g. Order query"></div>
+                <div class="fb-meta-wide"><label class="fb-label">What it does</label>
+                     <input id="flowDescription" class="agent-builder-input" placeholder="Reads an order email, looks the order up and tells the right colleague"></div>
+            </div>
+            <div class="fb-grid">
+                <aside class="fb-col fb-col-pal"><div class="fb-col-title">Steps you can use</div><div id="flowPalette"></div></aside>
+                <section class="fb-col fb-col-canvas"><div class="fb-col-title">Your flow</div><div id="flowCanvas" class="fb-canvas"></div></section>
+                <aside class="fb-col fb-col-insp"><div id="flowInspector"></div></aside>
+            </div>
+            <div class="fb-bottom">
+                <div class="fb-test">
+                    <h4 class="fb-sub">Try it</h4>
+                    <textarea id="flowTestInput" class="agent-builder-input" rows="4" placeholder="Paste what would start it, e.g. a customer email"></textarea>
+                    <button id="flowTestBtn" class="btn btn-secondary">Run once now</button>
+                    <pre id="flowTestOut" class="fb-out"></pre>
+                </div>
+                <div id="flowActivity" class="fb-activity"></div>
+            </div>
+        </div>
         <!-- ── Input dialog (agents that require_input) ─────────────────── -->
         <div id="agentInputDialog" class="agent-modal hidden" aria-hidden="true">
             <div class="agent-modal-backdrop"></div>

@@ -244,5 +244,22 @@
         return finalText !== null ? finalText : accumulated;
     }
 
-    BoudicaCode.AgentApi = { listAgents, saveAgent, deleteAgent, runAgent };
+    /**
+     * Action Flows (2026-11-13): the flow builder's endpoints under /flows/
+     * (src/flows_cgi.hpp in boudica_slm) - palette, get, triggers/*,
+     * routes/*, activity. Same credentials as the agent calls above.
+     */
+    async function flows(path, body = {}) {
+        const { apiKey, userId } = await resolveCredentials();
+        const url = `${apiBase()}/flows/${path}`;
+        const res = await wrapEndpointFetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
+            credentials: 'omit',
+            body: JSON.stringify({ ...body, user_id: userId, api_key: apiKey }),
+        });
+        return jsonOrThrow(res, `flows/${path}`);
+    }
+
+    BoudicaCode.AgentApi = { listAgents, saveAgent, deleteAgent, runAgent, flows };
 })(window);
