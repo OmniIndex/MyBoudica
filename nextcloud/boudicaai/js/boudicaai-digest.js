@@ -99,7 +99,8 @@
         if (list) list.innerHTML = '<span class="bd-digest-loading">Loading…</span>';
 
         fetch(OC.generateUrl('/apps/boudicaai/digest/data'), {
-            headers: { 'Accept': 'application/json' },
+            // Nextcloud refuses session requests without the request token (412).
+            headers: { 'Accept': 'application/json', requesttoken: OC.requestToken },
             credentials: 'same-origin',
         })
             .then(r => r.json())
@@ -248,7 +249,8 @@
     function loadMail() {
         const root = el('bdMailDigest');
         if (root) root.innerHTML = '<span class="bd-digest-loading">Loading…</span>';
-        fetch(OC.generateUrl('/apps/boudicaai/digest/mail'), { headers: { Accept: 'application/json' }, credentials: 'same-origin' })
+        fetch(OC.generateUrl('/apps/boudicaai/digest/mail'), { headers: { Accept: 'application/json', requesttoken: OC.requestToken }, credentials: 'same-origin' })
+            .then(r => { if (!r.ok && r.status !== 200) throw new Error('HTTP ' + r.status); return r; })
             .then(r => r.json())
             .then(renderMail)
             .catch(err => { if (root) { root.innerHTML = ''; root.appendChild(node('span', 'bd-digest-error', 'Could not load email: ' + err.message)); } });
