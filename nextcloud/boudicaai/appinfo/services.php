@@ -12,6 +12,7 @@ use OCA\BoudicaAi\Service\BoudicaService;
 use OCA\BoudicaAi\Service\CalendarSuggestionService;
 use OCA\BoudicaAi\Service\CallParticipantService;
 use OCA\BoudicaAi\Service\DigestService;
+use OCA\BoudicaAi\Service\MailDigestService;
 use OCA\BoudicaAi\Service\TranscriptionService;
 use OCA\BoudicaAi\Service\TranscriptEmailService;
 use OCP\IContainer;
@@ -91,6 +92,18 @@ $container->registerService(DigestService::class, function (IContainer $c) {
         $c->get(CalendarSuggestionService::class),
         $c->get(TranscriptEmailService::class),
         $c->get('OCP\IUserManager'),
+        $c->get('OCP\Log\ILogFactory')->get('boudicaai')
+    );
+});
+
+// Boudica Mail Digest: mail part (Boudica Mail server's /api/digest)
+$container->registerService(MailDigestService::class, function (IContainer $c) {
+    return new MailDigestService(
+        $c->get('OCP\IDBConnection'),
+        $c->get('OCP\Security\ICrypto'),
+        $c->get('OCP\IConfig'),
+        $c->get('OCP\IAppConfig'),
+        $c->get('OCP\Http\Client\IClientService'),
         $c->get('OCP\Log\ILogFactory')->get('boudicaai')
     );
 });

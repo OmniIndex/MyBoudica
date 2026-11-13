@@ -66,13 +66,13 @@ class Application extends App implements IBootstrap {
     }
 
     public function boot(IBootContext $context): void {
-        // Without Talk there is nothing for the "Talk Digest" page to show:
-        // hide its menu entry (a community MyBoudica has no chat between
+        // Without Talk or Mail there is nothing for the "Boudica Mail Digest"
+        // page to show (it was "Talk Digest" until 2026-11-13): hide its menu entry (a community MyBoudica has no chat between
         // users, so Talk is never installed there). The entry itself is
         // declared in appinfo/info.xml, which cannot be conditional.
         try {
             $appManager = $context->getServerContainer()->get(\OCP\App\IAppManager::class);
-            if (!$appManager->isEnabledForAnyone('spreed')) {
+            if (!$appManager->isEnabledForAnyone('spreed') && !$appManager->isEnabledForAnyone('mail')) {
                 // Inline, not a css/ file: css/ is build output and is not
                 // in git, so a file there would not reach other installs.
                 \OCP\Util::addHeader('style', [],
