@@ -146,6 +146,16 @@ script('boudicaagent', 'src/main');
             <div id="flowCopyBanner" class="fb-banner hidden"></div>
             <div id="flowError" class="agent-builder-error hidden"></div>
             <div id="flowNote" class="fb-note hidden"></div>
+            <div class="fb-describe">
+                <label class="fb-label" for="flowDescribeInput">Describe your flow <span class="fb-help-inline">(in your own words; Boudica drafts it on your own server, and nothing runs until you save)</span></label>
+                <textarea id="flowDescribeInput" class="agent-builder-input" rows="3" maxlength="3000"
+                          placeholder="e.g. When a customer emails about an order, look the order up and tell the right person: the warehouse for damaged or wrong items, accounts for payment problems, and me for anything else."></textarea>
+                <div class="fb-describe-row">
+                    <button id="flowDescribeBtn" class="btn btn-primary">Draft it for me</button>
+                    <span id="flowDescribeStatus" class="fb-help"></span>
+                </div>
+            </div>
+            <div id="flowDraftInfo" class="fb-draft-info hidden"></div>
             <div class="fb-meta">
                 <div><label class="fb-label">Name <span class="fb-help-inline">(used as @name)</span></label>
                      <input id="flowName" class="agent-builder-input" placeholder="e.g. order-query"></div>

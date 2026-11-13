@@ -15,7 +15,11 @@
  *     (boudislm.flow_routes);
  *   - the trigger (boudislm.flow_triggers): run by hand, on a schedule, or
  *     once for every new email (the flow-runner service does the running);
- *   - a test run and the flow's recent runs and messages.
+ *   - a test run and the flow's recent runs and messages;
+ *   - "Describe your flow": the person writes what they want in their own
+ *     words and Boudica's own model, on this server, drafts the steps, who to
+ *     tell and what starts it (/flows/draft). The draft only uses this
+ *     person's palette, is shown here to check, and is saved only by Save.
  *
  * Classic script. Loads after agentApi.js; needs the #flowBuilderPanel markup
  * in templates/main.php.
@@ -440,18 +444,23 @@
             renderInspector();
         });
     }
+    // Nextcloud users matching `q` (the sharing search everyone may use).
+    async function findUsers(q) {
+        const url = (global.OC ? OC.linkToOCS('apps/files_sharing/api/v1', 2) : '/ocs/v2.php/apps/files_sharing/api/v1/') +
+            'sharees?format=json&itemType=file&perPage=8&search=' + encodeURIComponent(q);
+        const res = await fetch(url, { headers: { 'OCS-APIRequest': 'true', requesttoken: global.OC ? OC.requestToken : '' } });
+        const data = await res.json();
+        const d = data.ocs && data.ocs.data ? data.ocs.data : {};
+        return { exact: (d.exact && d.exact.users) || [], users: d.users || [] };
+    }
     let suggestTimer = null;
     function suggestUsers(q) {
         clearTimeout(suggestTimer);
         if (!q || q.length < 2) return;
         suggestTimer = setTimeout(async () => {
             try {
-                const url = (global.OC ? OC.linkToOCS('apps/files_sharing/api/v1', 2) : '/ocs/v2.php/apps/files_sharing/api/v1/') +
-                    'sharees?format=json&itemType=file&perPage=8&search=' + encodeURIComponent(q);
-                const res = await fetch(url, { headers: { 'OCS-APIRequest': 'true', requesttoken: global.OC ? OC.requestToken : '' } });
-                const data = await res.json();
-                const d = data.ocs && data.ocs.data ? data.ocs.data : {};
-                const users = [...(d.exact && d.exact.users || []), ...(d.users || [])];
+                const f = await findUsers(q);
+                const users = [...f.exact, ...f.users];
                 const dl = $('fbUserList');
                 if (dl) dl.innerHTML = users.map((u) => `<option value="${esc(u.value.shareWith)}">${esc(u.label)}</option>`).join('');
             } catch (e) { /* suggestions are optional */ }
@@ -512,6 +521,86 @@
             }
         }
         renderAll();
+    }
+
+    // ── Describe your flow (draft from plain words) ───────────────────────
+    async function draftFromText() {
+        showError(''); showNote(''); showDraftInfo(null);
+        const input = $('flowDescribeInput');
+        const text = (input && input.value || '').trim();
+        if (!text) return showError('Describe what the flow should do, in your own words.');
+        if (state && state.dirty && !global.confirm('Replace the flow on screen with a new draft?')) return;
+        const btn = $('flowDescribeBtn');
+        const status = $('flowDescribeStatus');
+        btn.disabled = true;
+        if (status) status.textContent = 'Boudica is drafting your flow on your own server… this can take a minute.';
+        try {
+            const r = await Api().flows('draft', { description: text });
+            await loadDraft(r.draft, r.notes || []);
+        } catch (e) {
+            showError(e.message || String(e));
+        } finally {
+            btn.disabled = false;
+            if (status) status.textContent = '';
+        }
+    }
+
+    async function loadDraft(d, notes) {
+        state = freshState();
+        state.agent = { agent_id: 0, agent_name: d.agent_name || '', display_name: d.display_name || '',
+                        description: d.description || '', editable: true };
+        state.steps = (d.steps || []).map((s) => ({
+            uid: uidCounter++, service: s.service, description: s.description || '',
+            query_template: s.query_template || '', depends: (s.depends || []).filter((n) => n > 0),
+        }));
+        const t = d.trigger || {};
+        state.trigger = { ...state.trigger, trigger_id: 0, kind: t.kind || 'manual',
+                          every_minutes: t.every_minutes == null ? 5 : t.every_minutes, at_time: t.at_time || '08:00',
+                          mail_query: t.mail_query || 'in:inbox', mail_match: t.mail_match || '', prompt: '', enabled: true };
+        // Who to tell: a name the person wrote becomes an account when exactly
+        // one user matches it; otherwise they pick one in the routes list.
+        const me = (global.OC && OC.getCurrentUser && OC.getCurrentUser().uid) || '';
+        const unmatched = [];
+        state.routes = [];
+        for (const r of (d.routes || [])) {
+            const route = { ...r };
+            const who = (route.recipient_label || '').trim();
+            if (who.toLowerCase() === '@me') {   // the person themself
+                route.recipient = me;
+                route.recipient_label = 'Me';
+            } else if (who) {
+                try {
+                    const f = await findUsers(who);
+                    const pick = f.exact.length === 1 ? f.exact : (f.exact.length ? [] : f.users);
+                    if (pick.length === 1) route.recipient = pick[0].value.shareWith;
+                    else unmatched.push(who);
+                } catch (e) { unmatched.push(who); }
+            } else if (!route.issue_type) {
+                route.recipient = me;   // anything else: the person who made the flow
+                route.recipient_label = route.recipient_label || 'Me';
+            }
+            state.routes.push(route);
+        }
+        state.routesLoaded = true;
+        state.routesDirty = true;
+        state.dirty = true;
+        state.selected = state.steps.some((s) => s.service === 'notify')
+            ? state.steps[state.steps.length - 1].uid : 'start';
+        renderAll();
+        showDraftInfo({ questions: d.questions || [], notes, unmatched });
+    }
+
+    function showDraftInfo(info) {
+        const el = $('flowDraftInfo');
+        if (!el) return;
+        if (!info) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+        const li = (xs) => xs.map((x) => `<li>${esc(x)}</li>`).join('');
+        el.innerHTML = `<strong>Here is a draft. Nothing runs until you press Save flow.</strong>
+            <p class="fb-help">Check each step on the canvas, then who gets told (select the last step) and what starts it (select Start).</p>` +
+            (info.unmatched.length ? `<p class="fb-sub">Pick the account for:</p><ul>${li(info.unmatched)}</ul>` : '') +
+            (info.questions.length ? `<p class="fb-sub">Boudica asks:</p><ul>${li(info.questions)}</ul>` : '') +
+            (info.notes.length ? `<p class="fb-sub">Changed to fit what you have:</p><ul>${li(info.notes)}</ul>` : '');
+        el.classList.remove('hidden');
     }
 
     function showError(msg) {
@@ -700,6 +789,7 @@
         $('flowBackBtn')?.addEventListener('click', close);
         $('flowSaveBtn')?.addEventListener('click', saveFlow);
         $('flowTestBtn')?.addEventListener('click', testRun);
+        $('flowDescribeBtn')?.addEventListener('click', draftFromText);
         $('flowPicker')?.addEventListener('change', async (e) => {
             const v = e.target.value;
             if (!v) return;
@@ -709,6 +799,7 @@
         });
         $('flowNewBtn')?.addEventListener('click', () => {
             if (state && state.dirty && !global.confirm('Start a new flow without saving this one?')) return;
+            showDraftInfo(null);
             openFlow('');
             loadActivity();
         });

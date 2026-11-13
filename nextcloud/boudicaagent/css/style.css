@@ -524,3 +524,13 @@ body.fb-dragging .fb-drop { min-height: 40px; border: 2px dashed var(--border-co
 .fb-radio label, .fb-row label, .fb-dep, .fb-check { display: flex; align-items: center; gap: 6px; }
 .fb-radio input, .fb-row input[type="radio"], .fb-dep input, .fb-check input { margin: 0; min-height: 0; }
 .fb-empty.over { border-color: var(--primary-color); }
+
+/* Describe your flow (2026-11-13) */
+.fb-describe { margin: 8px 0 12px; padding: 12px; border: 1px solid var(--color-border, #ddd); border-radius: 8px;
+               background: var(--color-background-hover, #f7f7f7); }
+.fb-describe textarea { width: 100%; box-sizing: border-box; margin-top: 6px; }
+.fb-describe-row { display: flex; align-items: center; gap: 12px; margin-top: 8px; flex-wrap: wrap; }
+.fb-draft-info { margin: 0 0 12px; padding: 10px 12px; border-left: 4px solid var(--color-primary-element, #0082c9);
+                 background: var(--color-primary-element-light, #e6f3fa); border-radius: 4px; }
+.fb-draft-info ul { margin: 4px 0 8px 18px; padding: 0; list-style: disc; }
+.fb-draft-info.hidden { display: none; }
