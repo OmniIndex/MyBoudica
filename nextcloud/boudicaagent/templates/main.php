@@ -140,6 +140,7 @@ script('boudicaagent', 'src/main');
                 <div class="fb-head-actions">
                     <select id="flowPicker" class="agent-builder-input fb-picker" aria-label="Open a flow"></select>
                     <button id="flowNewBtn" class="btn btn-secondary">New flow</button>
+                    <button id="flowDeleteBtn" class="btn btn-secondary fb-delete hidden" title="Delete this flow">Delete flow</button>
                     <button id="flowSaveBtn" class="btn btn-primary">Save flow</button>
                 </div>
             </div>

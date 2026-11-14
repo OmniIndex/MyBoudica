@@ -903,6 +903,8 @@
         $('flowDisplayName').value = a.display_name;
         $('flowDescription').value = a.description;
         $('flowName').disabled = !!(a.agent_id && a.editable);
+        // Only your own saved flow can be deleted (a shared one is not yours).
+        $('flowDeleteBtn')?.classList.toggle('hidden', !(a.agent_id && a.editable && !state.copyOf));
         const banner = $('flowCopyBanner');
         if (banner) {
             banner.classList.toggle('hidden', !state.copyOf);
@@ -958,6 +960,31 @@
         } catch (e) { sel.innerHTML = '<option value="">Open a flow…</option>'; }
     }
 
+    // Delete flow (2026-11-14): the server also removes its trigger, queued
+    // emails and run history; Talk messages already sent are kept as a record.
+    async function deleteFlow() {
+        const a = state && state.agent;
+        if (!a || !a.agent_id || !a.editable) return;
+        const name = a.display_name || a.agent_name;
+        if (!global.confirm(`Delete the flow "${name}"?\n\nIt stops at once: its trigger and history are removed. ` +
+                            'Messages it already sent are kept. This cannot be undone.')) return;
+        const btn = $('flowDeleteBtn');
+        if (btn) btn.disabled = true;
+        try {
+            await Api().deleteAgent(a.agent_id);
+            state.dirty = false;
+            showDraftInfo(null);
+            await fillPicker('');
+            await openFlow('');
+            showNote(`Deleted "${name}".`);
+            loadActivity();
+        } catch (e) {
+            showError(e.message || String(e));
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    }
+
     function close() {
         if (state && state.dirty && !global.confirm('Leave without saving?')) return;
         $('flowBuilderPanel').classList.add('hidden');
@@ -969,6 +996,7 @@
         $('flowOpenBtn')?.addEventListener('click', () => open(''));
         $('flowBackBtn')?.addEventListener('click', close);
         $('flowSaveBtn')?.addEventListener('click', saveFlow);
+        $('flowDeleteBtn')?.addEventListener('click', deleteFlow);
         $('flowTestBtn')?.addEventListener('click', testRun);
         $('flowDescribeBtn')?.addEventListener('click', draftFromText);
         $('flowPicker')?.addEventListener('change', async (e) => {
