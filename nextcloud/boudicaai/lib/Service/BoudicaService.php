@@ -54,7 +54,7 @@ class BoudicaService {
         if (strlen($token) < 32) {
             return null;
         }
-        $endpoint = $this->config->getAppValue('boudicaai', 'api_endpoint', '');
+        $endpoint = $this->flowEndpoint();
         $response = $this->httpClient->post($endpoint, [
             'headers' => ['X-Boudica-Talk-Token' => $token],
             'json' => [
@@ -74,13 +74,23 @@ class BoudicaService {
         return $data['response'] ?? ($data['error'] ?? 'Sorry, the flow did not answer.');
     }
 
+    /**
+     * Where Talk flow calls go: app config talk_flow_endpoint when set (e.g.
+     * http://multiuser-web-1/api/boudica/chat over the shared Docker network,
+     * so Boudica sees Nextcloud's private address), else api_endpoint.
+     */
+    private function flowEndpoint(): string {
+        $direct = $this->config->getAppValue('boudicaai', 'talk_flow_endpoint', '');
+        return $direct !== '' ? $direct : $this->config->getAppValue('boudicaai', 'api_endpoint', '');
+    }
+
     /** The flows this person may run: [['agent_name' => ..., 'display_name' => ...], ...], or null without a token. */
     public function listFlowsFor(string $userEmail): ?array {
         $token = $this->config->getAppValue('boudicaai', 'talk_flow_token', '');
         if (strlen($token) < 32) {
             return null;
         }
-        $endpoint = $this->config->getAppValue('boudicaai', 'api_endpoint', '');
+        $endpoint = $this->flowEndpoint();
         $listUrl = preg_replace('#/chat/?$#', '', $endpoint) . '/agents/list';
         $response = $this->httpClient->post($listUrl, [
             'headers' => ['X-Boudica-Talk-Token' => $token],
