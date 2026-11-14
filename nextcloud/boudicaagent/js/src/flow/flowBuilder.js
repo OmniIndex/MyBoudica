@@ -334,7 +334,7 @@
                 // Saved steps come back JSON-escaped ({\"to\": ...}): undo one layer.
                 try { f = JSON.parse(JSON.parse('"' + s.query_template + '"')); } catch (e2) { f = {}; }
             }
-            html += `<p class="fb-help">Boudica sends exactly this message from your own mailbox (choose it under Start: "Replies sent as me"). Put a field name in curly brackets, like {order_no} or {contact_name}, where a value from the record goes. If the record has no value for one, nothing is sent. Each person gets this email once per record.</p>
+            html += `<p class="fb-help">Boudica sends exactly this message from your own mailbox (choose it by clicking the Start card: "Send as me"). Put a field name in curly brackets, like {order_no} or {contact_name}, where a value from the record goes. If the record has no value for one, nothing is sent. Each person gets this email once per record.</p>
                 <label class="fb-label">Send to <span class="fb-help-inline">(names of fields that hold email addresses, separated by commas, e.g. contact_email, account_manager_email; for an email that started the flow: sender_email)</span></label>
                 <input id="fbEmailTo" class="agent-builder-input" value="${esc((f.to || []).join(', '))}" placeholder="contact_email, account_manager_email">
                 <label class="fb-label">Subject</label>
@@ -421,7 +421,7 @@
               </div>
               <label class="fb-label">App password</label>
               <input id="fbLinkPw" type="password" class="agent-builder-input" autocomplete="new-password">
-              <label class="fb-check"><input type="checkbox" id="fbLinkSend"> Flows may also send replies as me from this mailbox
+              <label class="fb-check"><input type="checkbox" id="fbLinkSend" ${state.linkFromSendAs ? 'checked' : ''}> Flows may also send as me from this mailbox
                 <span class="fb-help-inline">(the app password is then kept, encrypted)</span></label>
               <div id="fbLinkSmtp" class="hidden">
                 <label class="fb-label">Sending server (SMTP)</label>
@@ -444,8 +444,9 @@
         }));
         const smtpShown = () => $('fbLinkSmtp')?.classList.toggle('hidden', !($('fbLinkSend')?.checked && kindNow() !== 'boudica'));
         $('fbLinkSend')?.addEventListener('change', smtpShown);
+        smtpShown();
         document.querySelectorAll('input[name="fbLinkKind"]').forEach((r) => r.addEventListener('change', smtpShown));
-        $('fbLinkCancel')?.addEventListener('click', () => { state.linkOpen = false; renderInspector(); });
+        $('fbLinkCancel')?.addEventListener('click', () => { state.linkOpen = false; state.linkFromSendAs = false; renderInspector(); });
         $('fbLinkGo')?.addEventListener('click', async () => {
             const btn = $('fbLinkGo');
             btn.disabled = true;
@@ -460,13 +461,22 @@
                     smtp_host: kind === 'boudica' ? '' : ($('fbLinkSmtpHost')?.value || '').trim(),
                     smtp_port: Number($('fbLinkSmtpPort')?.value || 465),
                 });
-                state.sendAs = null;   // its choices may have changed
                 $('fbLinkPw').value = '';
                 await loadMailSources();
-                state.trigger.mail_source = 'mailbox:' + r.mailbox.mailbox_id;
+                const forSending = !!state.linkFromSendAs;
                 state.linkOpen = false;
-                state.dirty = true;
-                showNote(`Linked ${r.mailbox.address}. Save the flow to start watching it.`);
+                state.linkFromSendAs = false;
+                if (forSending) {
+                    // Linked from "Send as me": pick it there; nothing about the trigger changes.
+                    await loadSendAs();
+                    if (state.sendAs && r.mailbox.can_send) state.sendAs.source = 'mailbox:' + r.mailbox.mailbox_id;
+                    showNote(`Linked ${r.mailbox.address}. Choose the name to sign with under "Send as me" and press Save there.`);
+                } else {
+                    state.sendAs = null;   // its choices may have changed
+                    state.trigger.mail_source = 'mailbox:' + r.mailbox.mailbox_id;
+                    state.dirty = true;
+                    showNote(`Linked ${r.mailbox.address}. Save the flow to start watching it.`);
+                }
                 renderAll();
             } catch (e) {
                 showError(e.message || String(e));
@@ -482,15 +492,16 @@
         const sa = state.sendAs;
         if (!sa) {
             loadSendAs();
-            return '<div class="fb-link" id="fbSendAs"><h4 class="fb-sub">Replies sent as me</h4><p class="fb-help">Loading…</p></div>';
+            return '<div class="fb-link" id="fbSendAs"><h4 class="fb-sub">Send as me</h4><p class="fb-help">Loading…</p></div>';
         }
         const opts = [`<option value="">Off: flows never send as me</option>`]
             .concat(sa.choices.map((c) => `<option value="${esc(c.source)}" ${c.source === sa.source ? 'selected' : ''}>${esc(c.label)}</option>`));
-        return `<div class="fb-link" id="fbSendAs"><h4 class="fb-sub">Replies sent as me</h4>
-            <p class="fb-help">When a flow routes an email to you and its owner switched on "tell the sender", Boudica sends the sender a short fixed note from this mailbox: their email arrived and you are looking at it. It never writes anything else as you.</p>
+        return `<div class="fb-link" id="fbSendAs"><h4 class="fb-sub">Send as me</h4>
+            <p class="fb-help">The mailbox flows use when they email as you: the "Send an email" steps in your own flows (the fixed message you wrote), and the short "we have it" note when a flow routes an email to you and its owner switched that on. Nothing else is ever sent as you.</p>
             <label class="fb-label">Send from</label>
             <select id="fbSendAsSource" class="agent-builder-input">${opts.join('')}</select>
-            ${sa.choices.length ? '' : '<p class="fb-help">To send from a mailbox, link it above with "Flows may also send replies as me" ticked.</p>'}
+            <button type="button" class="fb-linkish" id="fbSendLinkOpen">Link a mailbox for sending…</button>
+            ${state.linkOpen && state.linkFromSendAs ? linkFormHtml() : ''}
             <label class="fb-label">Sign as</label>
             <input id="fbSendAsName" class="agent-builder-input" value="${esc(sa.display_name || '')}" placeholder="Your name">
             <div class="fb-row"><button type="button" id="fbSendAsSave">Save</button></div></div>`;
@@ -505,6 +516,7 @@
         if (state.selected === 'start') renderInspector();
     }
     function wireSendAs() {
+        $('fbSendLinkOpen')?.addEventListener('click', () => { state.linkOpen = true; state.linkFromSendAs = true; renderInspector(); });
         $('fbSendAsSave')?.addEventListener('click', async () => {
             try {
                 const r = await Api().flows('send_as/save', { source: $('fbSendAsSource').value, display_name: $('fbSendAsName').value });
@@ -554,7 +566,7 @@
                 <button type="button" id="fbLinkOpen">Link a mailbox…</button>
               </div>
               ${src && src.mailbox_id ? `<button type="button" class="fb-linkish" id="fbUnlink">Remove this mailbox</button>` : ''}
-              ${state.linkOpen ? linkFormHtml() : ''}
+              ${state.linkOpen && !state.linkFromSendAs ? linkFormHtml() : ''}
               <div class="${isGmail ? '' : 'hidden'}">
                 <label class="fb-label">Which emails (Gmail search)</label>
                 <input id="fbMailQuery" class="agent-builder-input" value="${esc(t.mail_query)}" placeholder="in:inbox">
@@ -644,7 +656,7 @@
             <button type="button" id="fbRouteAdd" class="btn btn-secondary fb-small">Add a route</button>
             <label class="fb-check"><input type="checkbox" id="fbAckSender" ${state.ackSender ? 'checked' : ''}>
               Also tell the sender their email arrived and who is looking at it</label>
-            <p class="fb-help">A short, fixed reply in the sender's language, sent from the chosen colleague's own mailbox, and only if that colleague allowed it (under Start: "Replies sent as me"). Never sent to dangerous or automatic mail, or more than once a day per sender and order.</p>`;
+            <p class="fb-help">A short, fixed reply in the sender's language, sent from the chosen colleague's own mailbox, and only if that colleague allowed it (Start card: "Send as me"). Never sent to dangerous or automatic mail, or more than once a day per sender and order.</p>`;
     }
     function wireRoutesEditor() {
         document.querySelectorAll('.fb-r').forEach((inp) => inp.addEventListener('input', () => {
