@@ -74,10 +74,11 @@
 
     function tileFor(service) {
         return (state.palette || []).find((t) => t.service === service) ||
-            { service, label: service, group: service.startsWith('db:') ? 'read' : 'think', description: '' };
+            { service, label: service, group: (service.startsWith('db:') || service.startsWith('api:')) ? 'read' : 'think', description: '' };
     }
     function iconFor(service) {
         if (service.startsWith('db:')) return '🗄';
+        if (service.startsWith('api:')) return '🔌';
         if (service.startsWith('app:')) return '🧩';
         return ICON[service] || '•';
     }
