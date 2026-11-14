@@ -63,6 +63,8 @@
             trigger: { trigger_id: 0, kind: 'manual', every_minutes: 5, at_time: '08:00',
                        mail_query: 'in:inbox', mail_match: '', prompt: '', enabled: true, mail_source: '' },
             routes: [],
+            ackSender: false,
+            sendAs: state ? state.sendAs : null,
             routesLoaded: false,
             routesDirty: false,
             selected: 'start',
@@ -387,6 +389,13 @@
               </div>
               <label class="fb-label">App password</label>
               <input id="fbLinkPw" type="password" class="agent-builder-input" autocomplete="new-password">
+              <label class="fb-check"><input type="checkbox" id="fbLinkSend"> Flows may also send replies as me from this mailbox
+                <span class="fb-help-inline">(the app password is then kept, encrypted)</span></label>
+              <div id="fbLinkSmtp" class="hidden">
+                <label class="fb-label">Sending server (SMTP)</label>
+                <div class="fb-row"><input id="fbLinkSmtpHost" class="agent-builder-input" autocomplete="off" placeholder="smtp.example.com">
+                  <select id="fbLinkSmtpPort" class="agent-builder-input fb-num"><option value="465">465</option><option value="587">587</option></select></div>
+              </div>
               <p class="fb-help" id="fbLinkHelp">${host ? 'Boudica signs in once to check the mailbox is yours, then forgets the password: the mail server hands each new email over itself. Your own sign-in address needs no password.'
                                                       : 'Use an app password made for Boudica, not your main password. It is kept encrypted, and only used to read new mail.'}</p>
               <div class="fb-row"><button type="button" class="primary" id="fbLinkGo">Link mailbox</button>
@@ -401,6 +410,9 @@
                 ? 'Boudica signs in once to check the mailbox is yours, then forgets the password: the mail server hands each new email over itself. Your own sign-in address needs no password.'
                 : 'Use an app password made for Boudica, not your main password. It is kept encrypted, and only used to read new mail.';
         }));
+        const smtpShown = () => $('fbLinkSmtp')?.classList.toggle('hidden', !($('fbLinkSend')?.checked && kindNow() !== 'boudica'));
+        $('fbLinkSend')?.addEventListener('change', smtpShown);
+        document.querySelectorAll('input[name="fbLinkKind"]').forEach((r) => r.addEventListener('change', smtpShown));
         $('fbLinkCancel')?.addEventListener('click', () => { state.linkOpen = false; renderInspector(); });
         $('fbLinkGo')?.addEventListener('click', async () => {
             const btn = $('fbLinkGo');
@@ -412,7 +424,11 @@
                     kind, address: $('fbLinkAddr').value.trim(), password: $('fbLinkPw').value,
                     imap_host: kind === 'boudica' ? '' : $('fbLinkHost').value.trim(),
                     username: kind === 'boudica' ? '' : $('fbLinkUser').value.trim(),
+                    can_send: !!$('fbLinkSend')?.checked,
+                    smtp_host: kind === 'boudica' ? '' : ($('fbLinkSmtpHost')?.value || '').trim(),
+                    smtp_port: Number($('fbLinkSmtpPort')?.value || 465),
                 });
+                state.sendAs = null;   // its choices may have changed
                 $('fbLinkPw').value = '';
                 await loadMailSources();
                 state.trigger.mail_source = 'mailbox:' + r.mailbox.mailbox_id;
@@ -425,6 +441,45 @@
             } finally {
                 if ($('fbLinkGo')) $('fbLinkGo').disabled = false;
             }
+        });
+    }
+
+    // "Replies sent as me" (2026-11-14): whether any flow that routes an email
+    // to this person may send the sender a fixed "we have it" reply as them.
+    function sendAsHtml() {
+        const sa = state.sendAs;
+        if (!sa) {
+            loadSendAs();
+            return '<div class="fb-link" id="fbSendAs"><h4 class="fb-sub">Replies sent as me</h4><p class="fb-help">Loading…</p></div>';
+        }
+        const opts = [`<option value="">Off: flows never send as me</option>`]
+            .concat(sa.choices.map((c) => `<option value="${esc(c.source)}" ${c.source === sa.source ? 'selected' : ''}>${esc(c.label)}</option>`));
+        return `<div class="fb-link" id="fbSendAs"><h4 class="fb-sub">Replies sent as me</h4>
+            <p class="fb-help">When a flow routes an email to you and its owner switched on "tell the sender", Boudica sends the sender a short fixed note from this mailbox: their email arrived and you are looking at it. It never writes anything else as you.</p>
+            <label class="fb-label">Send from</label>
+            <select id="fbSendAsSource" class="agent-builder-input">${opts.join('')}</select>
+            ${sa.choices.length ? '' : '<p class="fb-help">To send from a mailbox, link it above with "Flows may also send replies as me" ticked.</p>'}
+            <label class="fb-label">Sign as</label>
+            <input id="fbSendAsName" class="agent-builder-input" value="${esc(sa.display_name || '')}" placeholder="Your name">
+            <div class="fb-row"><button type="button" id="fbSendAsSave">Save</button></div></div>`;
+    }
+    async function loadSendAs() {
+        try {
+            const r = await Api().flows('send_as/get', {});
+            state.sendAs = { choices: r.choices || [], source: r.source || '', display_name: r.display_name || '' };
+        } catch (e) {
+            state.sendAs = { choices: [], source: '', display_name: '' };
+        }
+        if (state.selected === 'start') renderInspector();
+    }
+    function wireSendAs() {
+        $('fbSendAsSave')?.addEventListener('click', async () => {
+            try {
+                const r = await Api().flows('send_as/save', { source: $('fbSendAsSource').value, display_name: $('fbSendAsName').value });
+                state.sendAs = { choices: r.choices || [], source: r.source || '', display_name: r.display_name || '' };
+                showNote(r.source ? 'Saved: flows may send "we have it" replies as you.' : 'Saved: flows will not send as you.');
+                renderInspector();
+            } catch (e) { showError(e.message || String(e)); }
         });
     }
 
@@ -479,7 +534,8 @@
               <div class="fb-row"><input id="fbMailEvery" type="number" min="2" class="agent-builder-input fb-num" value="${t.every_minutes > 0 ? t.every_minutes : 5}"> minutes</div>
             </div>
             <label class="fb-check ${t.kind === 'manual' ? 'hidden' : ''}" id="fbEnabledRow"><input type="checkbox" id="fbEnabled" ${t.enabled ? 'checked' : ''}> On (untick to pause)</label>
-            <p class="fb-help">Scheduled and email flows run on the server, so the page can be closed. An administrator has to switch the flow runner on for this site.</p>`;
+            <p class="fb-help">Scheduled and email flows run on the server, so the page can be closed. An administrator has to switch the flow runner on for this site.</p>
+            ${sendAsHtml()}`;
         el.querySelectorAll('input[name="fbKind"]').forEach((r) => r.addEventListener('change', () => {
             t.kind = r.value;
             if (t.kind === 'new_mail' && !(t.every_minutes > 0)) t.every_minutes = 5;
@@ -503,6 +559,7 @@
             } catch (e) { showError(e.message || String(e)); }
         });
         if (state.linkOpen) wireLinkForm();
+        wireSendAs();
         bind('fbMailMatch', (x) => { t.mail_match = x.value; });
         bind('fbMailEvery', (x) => { t.every_minutes = Math.max(2, Number(x.value) || 5); });
         bind('fbEvery', (x) => { if (document.querySelector('input[name="fbSched"]:checked')?.value === 'every') t.every_minutes = Math.max(2, Number(x.value) || 60); });
@@ -532,7 +589,10 @@
             <table class="fb-routes"><thead><tr><th>Issue key</th><th>What it means</th><th>Tell</th><th>Team name</th><th></th></tr></thead>
               <tbody>${rows || '<tr><td colspan="5" class="fb-help">No routes yet: add at least one.</td></tr>'}</tbody></table>
             <datalist id="fbUserList"></datalist>
-            <button type="button" id="fbRouteAdd" class="btn btn-secondary fb-small">Add a route</button>`;
+            <button type="button" id="fbRouteAdd" class="btn btn-secondary fb-small">Add a route</button>
+            <label class="fb-check"><input type="checkbox" id="fbAckSender" ${state.ackSender ? 'checked' : ''}>
+              Also tell the sender their email arrived and who is looking at it</label>
+            <p class="fb-help">A short, fixed reply in the sender's language, sent from the chosen colleague's own mailbox, and only if that colleague allowed it (under Start: "Replies sent as me"). Never sent to dangerous or automatic mail, or more than once a day per sender and order.</p>`;
     }
     function wireRoutesEditor() {
         document.querySelectorAll('.fb-r').forEach((inp) => inp.addEventListener('input', () => {
@@ -547,6 +607,10 @@
             state.routesDirty = true; state.dirty = true;
             renderInspector();
         }));
+        $('fbAckSender')?.addEventListener('change', (e) => {
+            state.ackSender = e.target.checked;
+            state.routesDirty = true; state.dirty = true;
+        });
         $('fbRouteAdd')?.addEventListener('click', () => {
             state.routes.push({ issue_type: '', description: '', recipient_kind: 'talk_user', recipient: '', recipient_label: '' });
             state.routesDirty = true; state.dirty = true;
@@ -587,6 +651,7 @@
         try {
             const r = await Api().flows('routes/list', { flow_name: state.agent.agent_name });
             state.routes = (r.routes || []).map((x) => ({ ...x }));
+            state.ackSender = !!r.ack_sender;
             state.routesLoaded = true;
         } catch (e) {
             state.routesLoaded = true;
@@ -625,6 +690,7 @@
                 try {
                     const rr = await Api().flows('routes/list', { flow_name: a.agent_name });
                     state.routes = (rr.routes || []).map((x) => ({ ...x }));
+                    state.ackSender = !!rr.ack_sender;
                     state.routesLoaded = true;
                     if (state.copyOf) state.routesDirty = true;   // the copy gets its own routes
                 } catch (e) { /* none */ }
@@ -765,6 +831,7 @@
                         issue_type: (r.issue_type || '').trim().toLowerCase(), description: r.description || '',
                         recipient_kind: r.recipient_kind || 'talk_user', recipient: (r.recipient || '').trim(),
                         recipient_label: r.recipient_label || '' })),
+                    ack_sender: !!state.ackSender,
                 });
                 state.routesDirty = false;
             }

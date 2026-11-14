@@ -10,7 +10,7 @@ agents and build/edit/delete their own private multi-step agent
 flows — the same builder as the main Boudica app's agents overlay,
 ported to run standalone inside Nextcloud.
     ]]></description>
-    <version>0.2.4</version>
+    <version>0.2.5</version>
     <licence>agpl</licence>
     <author>You</author>
     <namespace>BoudicaAgent</namespace>
