@@ -54,11 +54,14 @@
         return {
             palette: state ? state.palette : [],
             hint: state ? state.hint : '',
+            mailSources: state ? state.mailSources : [],
+            boudicaMailHost: state ? state.boudicaMailHost : '',
+            linkOpen: false,
             agent: { agent_id: 0, agent_name: '', display_name: '', description: '', editable: true },
             copyOf: '',
             steps: [],
             trigger: { trigger_id: 0, kind: 'manual', every_minutes: 5, at_time: '08:00',
-                       mail_query: 'in:inbox', mail_match: '', prompt: '', enabled: true },
+                       mail_query: 'in:inbox', mail_match: '', prompt: '', enabled: true, mail_source: '' },
             routes: [],
             routesLoaded: false,
             routesDirty: false,
@@ -202,7 +205,10 @@
         const t = state.trigger;
         if (t.kind === 'new_mail') {
             const m = t.mail_match ? ` containing ${t.mail_match}` : '';
-            return `For every new email${m} (checked every ${t.every_minutes} min)`;
+            const src = mailSource(t.mail_source);
+            const where = src ? ` in ${src.address || src.label}` : '';
+            return src && src.instant ? `For every new email${where}${m} (starts as it arrives)`
+                                      : `For every new email${where}${m} (checked every ${t.every_minutes} min)`;
         }
         if (t.kind === 'schedule') {
             return t.every_minutes > 0 ? `Every ${t.every_minutes} minutes` : `Every day at ${t.at_time} UTC`;
@@ -350,9 +356,86 @@
         if (s.service === 'notify') wireRoutesEditor();
     }
 
+    // Mailboxes a new-email flow can read (/flows/mailboxes/list, 2026-11-14):
+    // connected Gmail/Outlook, plus Boudica Mail or other mailboxes linked here.
+    function mailSource(source) {
+        const all = state.mailSources || [];
+        return all.find((x) => x.source === source) || (source ? null : all[0]) || null;
+    }
+    async function loadMailSources() {
+        try {
+            const r = await Api().flows('mailboxes/list', {});
+            state.mailSources = r.sources || [];
+            state.boudicaMailHost = r.boudica_mail_host || '';
+        } catch (e) { state.mailSources = state.mailSources || []; }
+    }
+    function linkFormHtml() {
+        const host = state.boudicaMailHost;
+        return `<div class="fb-link">
+              <label class="fb-label">Which kind</label>
+              <div class="fb-radio">
+                ${host ? `<label><input type="radio" name="fbLinkKind" value="boudica" checked> Boudica Mail (${esc(host)})</label>` : ''}
+                <label><input type="radio" name="fbLinkKind" value="imap" ${host ? '' : 'checked'}> Another mail service (IMAP)</label>
+              </div>
+              <label class="fb-label">Email address</label>
+              <input id="fbLinkAddr" class="agent-builder-input" autocomplete="off" placeholder="you@example.com">
+              <div id="fbLinkImap" class="${host ? 'hidden' : ''}">
+                <label class="fb-label">Mail server (IMAP, port 993)</label>
+                <input id="fbLinkHost" class="agent-builder-input" autocomplete="off" placeholder="imap.example.com">
+                <label class="fb-label">User name <span class="fb-help-inline">(if it is not the address)</span></label>
+                <input id="fbLinkUser" class="agent-builder-input" autocomplete="off">
+              </div>
+              <label class="fb-label">App password</label>
+              <input id="fbLinkPw" type="password" class="agent-builder-input" autocomplete="new-password">
+              <p class="fb-help" id="fbLinkHelp">${host ? 'Boudica signs in once to check the mailbox is yours, then forgets the password: the mail server hands each new email over itself. Your own sign-in address needs no password.'
+                                                      : 'Use an app password made for Boudica, not your main password. It is kept encrypted, and only used to read new mail.'}</p>
+              <div class="fb-row"><button type="button" class="primary" id="fbLinkGo">Link mailbox</button>
+                <button type="button" id="fbLinkCancel">Cancel</button></div>
+            </div>`;
+    }
+    function wireLinkForm() {
+        const kindNow = () => document.querySelector('input[name="fbLinkKind"]:checked')?.value || 'imap';
+        document.querySelectorAll('input[name="fbLinkKind"]').forEach((r) => r.addEventListener('change', () => {
+            $('fbLinkImap').classList.toggle('hidden', kindNow() === 'boudica');
+            $('fbLinkHelp').textContent = kindNow() === 'boudica'
+                ? 'Boudica signs in once to check the mailbox is yours, then forgets the password: the mail server hands each new email over itself. Your own sign-in address needs no password.'
+                : 'Use an app password made for Boudica, not your main password. It is kept encrypted, and only used to read new mail.';
+        }));
+        $('fbLinkCancel')?.addEventListener('click', () => { state.linkOpen = false; renderInspector(); });
+        $('fbLinkGo')?.addEventListener('click', async () => {
+            const btn = $('fbLinkGo');
+            btn.disabled = true;
+            showError('');
+            try {
+                const kind = kindNow();
+                const r = await Api().flows('mailboxes/add', {
+                    kind, address: $('fbLinkAddr').value.trim(), password: $('fbLinkPw').value,
+                    imap_host: kind === 'boudica' ? '' : $('fbLinkHost').value.trim(),
+                    username: kind === 'boudica' ? '' : $('fbLinkUser').value.trim(),
+                });
+                $('fbLinkPw').value = '';
+                await loadMailSources();
+                state.trigger.mail_source = 'mailbox:' + r.mailbox.mailbox_id;
+                state.linkOpen = false;
+                state.dirty = true;
+                showNote(`Linked ${r.mailbox.address}. Save the flow to start watching it.`);
+                renderAll();
+            } catch (e) {
+                showError(e.message || String(e));
+            } finally {
+                if ($('fbLinkGo')) $('fbLinkGo').disabled = false;
+            }
+        });
+    }
+
     function renderTriggerInspector(el) {
         const t = state.trigger;
-        const hasMail = state.palette.some((p) => p.service === 'gmail');
+        const sources = state.mailSources || [];
+        const hasMail = sources.length > 0;
+        if (t.kind === 'new_mail' && !t.mail_source && sources.length) t.mail_source = sources[0].source;
+        const src = mailSource(t.mail_source);
+        const isGmail = src && src.source === 'gmail';
+        const instant = !!(src && src.instant);
         el.innerHTML = `<h3>How this flow starts</h3>
             <div class="fb-radio">
               <label><input type="radio" name="fbKind" value="manual" ${t.kind === 'manual' ? 'checked' : ''}> When I run it</label>
@@ -360,10 +443,21 @@
               <label><input type="radio" name="fbKind" value="schedule" ${t.kind === 'schedule' ? 'checked' : ''}> On a schedule</label>
             </div>
             <div id="fbKindMail" class="${t.kind === 'new_mail' ? '' : 'hidden'}">
-              ${hasMail ? '' : '<p class="fb-warn">Connect a Gmail account first: Boudica can only watch a mailbox you have connected.</p>'}
-              <p class="fb-help">Each new email starts the flow once, with that email as "what started the flow". Boudica never replies to the sender.</p>
-              <label class="fb-label">Which emails (Gmail search)</label>
-              <input id="fbMailQuery" class="agent-builder-input" value="${esc(t.mail_query)}" placeholder="in:inbox">
+              ${hasMail ? '' : '<p class="fb-warn">Link a mailbox first: Boudica can only watch a mailbox that is yours.</p>'}
+              <p class="fb-help">Each new email starts the flow once, with that email as "what started the flow". Boudica never replies to the sender, and an email the mail server marks as dangerous never starts it.</p>
+              <label class="fb-label">Read mail from</label>
+              <div class="fb-row">
+                <select id="fbMailSource" class="agent-builder-input">
+                  ${sources.map((x) => `<option value="${esc(x.source)}" ${src && x.source === src.source ? 'selected' : ''}>${esc(x.label)}${x.last_error ? ' — ' + esc(x.last_error) : ''}</option>`).join('')}
+                </select>
+                <button type="button" id="fbLinkOpen">Link a mailbox…</button>
+              </div>
+              ${src && src.mailbox_id ? `<button type="button" class="fb-linkish" id="fbUnlink">Remove this mailbox</button>` : ''}
+              ${state.linkOpen ? linkFormHtml() : ''}
+              <div class="${isGmail ? '' : 'hidden'}">
+                <label class="fb-label">Which emails (Gmail search)</label>
+                <input id="fbMailQuery" class="agent-builder-input" value="${esc(t.mail_query)}" placeholder="in:inbox">
+              </div>
               <label class="fb-label">Only emails containing <span class="fb-help-inline">(optional pattern, e.g. HL-[0-9]{6} for an order number)</span></label>
               <input id="fbMailMatch" class="agent-builder-input" value="${esc(t.mail_match)}">
             </div>
@@ -380,7 +474,7 @@
               <label class="fb-label">Text the flow starts with</label>
               <textarea id="fbPrompt" class="agent-builder-input" rows="3">${esc(t.prompt)}</textarea>
             </div>
-            <div id="fbKindPoll" class="${t.kind === 'new_mail' ? '' : 'hidden'}">
+            <div id="fbKindPoll" class="${t.kind === 'new_mail' && !instant ? '' : 'hidden'}">
               <label class="fb-label">Check for new email every</label>
               <div class="fb-row"><input id="fbMailEvery" type="number" min="2" class="agent-builder-input fb-num" value="${t.every_minutes > 0 ? t.every_minutes : 5}"> minutes</div>
             </div>
@@ -394,6 +488,21 @@
         }));
         const bind = (id, fn) => { const x = $(id); if (x) x.addEventListener('input', () => { fn(x); state.dirty = true; renderCanvas(); }); };
         bind('fbMailQuery', (x) => { t.mail_query = x.value; });
+        const sel = $('fbMailSource');
+        if (sel) sel.addEventListener('change', () => { t.mail_source = sel.value; state.dirty = true; renderAll(); });
+        $('fbLinkOpen')?.addEventListener('click', () => { state.linkOpen = true; renderInspector(); });
+        $('fbUnlink')?.addEventListener('click', async () => {
+            const cur = mailSource(t.mail_source);
+            if (!cur || !cur.mailbox_id) return;
+            try {
+                await Api().flows('mailboxes/delete', { mailbox_id: cur.mailbox_id });
+                await loadMailSources();
+                t.mail_source = (state.mailSources[0] || {}).source || '';
+                showNote(`Removed ${cur.address}. Flows that read it are paused.`);
+                renderAll();
+            } catch (e) { showError(e.message || String(e)); }
+        });
+        if (state.linkOpen) wireLinkForm();
         bind('fbMailMatch', (x) => { t.mail_match = x.value; });
         bind('fbMailEvery', (x) => { t.every_minutes = Math.max(2, Number(x.value) || 5); });
         bind('fbEvery', (x) => { if (document.querySelector('input[name="fbSched"]:checked')?.value === 'every') t.every_minutes = Math.max(2, Number(x.value) || 60); });
@@ -508,7 +617,8 @@
                 if (tr && a.editable) {
                     state.trigger = { trigger_id: tr.trigger_id, kind: tr.trigger_kind, every_minutes: tr.every_minutes,
                                       at_time: tr.at_time || '08:00', mail_query: tr.mail_query || 'in:inbox',
-                                      mail_match: tr.mail_match || '', prompt: tr.prompt || '', enabled: tr.enabled };
+                                      mail_match: tr.mail_match || '', prompt: tr.prompt || '', enabled: tr.enabled,
+                                      mail_source: tr.mail_source || '' };
                 }
             } catch (e) { /* no triggers yet */ }
             if (state.steps.some((s) => s.service === 'notify')) {
@@ -556,7 +666,8 @@
         const t = d.trigger || {};
         state.trigger = { ...state.trigger, trigger_id: 0, kind: t.kind || 'manual',
                           every_minutes: t.every_minutes == null ? 5 : t.every_minutes, at_time: t.at_time || '08:00',
-                          mail_query: t.mail_query || 'in:inbox', mail_match: t.mail_match || '', prompt: '', enabled: true };
+                          mail_query: t.mail_query || 'in:inbox', mail_match: t.mail_match || '', prompt: '', enabled: true,
+                          mail_source: '' };
         // Who to tell: a name the person wrote becomes an account when exactly
         // one user matches it; otherwise they pick one in the routes list.
         const me = (global.OC && OC.getCurrentUser && OC.getCurrentUser().uid) || '';
@@ -664,6 +775,7 @@
                     trigger_id: t.trigger_id || 0, agent_name: a.agent_name, trigger_kind: t.kind,
                     every_minutes: t.kind === 'new_mail' ? Math.max(2, t.every_minutes || 5) : (t.every_minutes || 0),
                     at_time: t.at_time, prompt: t.prompt, mail_query: t.mail_query, mail_match: t.mail_match, enabled: t.enabled,
+                    mail_source: t.kind === 'new_mail' ? (t.mail_source || '') : '',
                 });
                 t.trigger_id = r.trigger.trigger_id;
             }
@@ -749,6 +861,7 @@
             state = state || freshState();
             state.palette = p.tiles || [];
             state.hint = p.hint || '';
+            await loadMailSources();
         } catch (e) {
             state = state || freshState();
             showError('Could not load your connections: ' + (e.message || e));
