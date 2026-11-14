@@ -41,6 +41,57 @@ class BoudicaService {
         $this->cache->set($sessionId, json_encode($history), 6 * 3600);
     }    
 
+    /**
+     * Flows from Talk (2026-11-14): runs "@flow ..." as the Boudica account of
+     * the person who wrote it, not as the bot's own account. Boudica accepts
+     * this only with the Talk token (app config talk_flow_token = Boudica's
+     * BOUDICA_TALK_TOKEN), from Nextcloud's private address, for an active
+     * Boudica user, and only to run or list flows.
+     * Returns null when the token is not set (the caller says so).
+     */
+    public function runFlowAs(string $userEmail, string $message, string $sessionId): ?string {
+        $token = $this->config->getAppValue('boudicaai', 'talk_flow_token', '');
+        if (strlen($token) < 32) {
+            return null;
+        }
+        $endpoint = $this->config->getAppValue('boudicaai', 'api_endpoint', '');
+        $response = $this->httpClient->post($endpoint, [
+            'headers' => ['X-Boudica-Talk-Token' => $token],
+            'json' => [
+                'message' => $message,
+                'talk_user' => $userEmail,
+                'session_id' => 'talkflow-' . $sessionId,
+                'disable_memory' => 'true',
+                'stream' => false,
+            ],
+            'timeout' => 600,
+            'verify' => false,
+        ]);
+        $data = json_decode((string)$response->getBody(), true);
+        if (!is_array($data)) {
+            return 'Sorry, the flow did not answer.';
+        }
+        return $data['response'] ?? ($data['error'] ?? 'Sorry, the flow did not answer.');
+    }
+
+    /** The flows this person may run: [['agent_name' => ..., 'display_name' => ...], ...], or null without a token. */
+    public function listFlowsFor(string $userEmail): ?array {
+        $token = $this->config->getAppValue('boudicaai', 'talk_flow_token', '');
+        if (strlen($token) < 32) {
+            return null;
+        }
+        $endpoint = $this->config->getAppValue('boudicaai', 'api_endpoint', '');
+        $listUrl = preg_replace('#/chat/?$#', '', $endpoint) . '/agents/list';
+        $response = $this->httpClient->post($listUrl, [
+            'headers' => ['X-Boudica-Talk-Token' => $token],
+            'json' => ['talk_user' => $userEmail],
+            'timeout' => 30,
+            'verify' => false,
+        ]);
+        $data = json_decode((string)$response->getBody(), true);
+        return is_array($data) && isset($data['agents']) && is_array($data['agents']) ? $data['agents'] : [];
+    }
+
     public function ask(string $prompt, string $sessionId): string {
         $apiKey = $this->config->getAppValue('boudicaai', 'api_key', '');
         $endpoint = $this->config->getAppValue('boudicaai', 'api_endpoint', '');

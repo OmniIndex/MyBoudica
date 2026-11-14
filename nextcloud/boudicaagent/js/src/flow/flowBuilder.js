@@ -61,7 +61,8 @@
             copyOf: '',
             steps: [],
             trigger: { trigger_id: 0, kind: 'manual', every_minutes: 5, at_time: '08:00',
-                       mail_query: 'in:inbox', mail_match: '', prompt: '', enabled: true, mail_source: '' },
+                       mail_query: 'in:inbox', mail_match: '', prompt: '', enabled: true, mail_source: '',
+                       db_connection: '', db_lookup: '' },
             routes: [],
             ackSender: false,
             sendAs: state ? state.sendAs : null,
@@ -216,6 +217,10 @@
         if (t.kind === 'schedule') {
             return t.every_minutes > 0 ? `Every ${t.every_minutes} minutes` : `Every day at ${t.at_time} UTC`;
         }
+        if (t.kind === 'db_change') {
+            return t.db_connection ? `For every changed record in db:${t.db_connection} (${t.db_lookup}), checked every ${t.every_minutes} min`
+                                   : 'When a database record changes (choose the database)';
+        }
         return 'When you run it (chat: @name, or Run below)';
     }
 
@@ -225,7 +230,7 @@
         const t = state.trigger;
         let html = `<div class="fb-card fb-start ${state.selected === 'start' ? 'selected' : ''}" data-sel="start">
                       <div class="fb-card-kicker">Start</div>
-                      <div class="fb-card-title">${t.kind === 'new_mail' ? '✉ New email' : t.kind === 'schedule' ? '⏱ Schedule' : '▶ Run by hand'}</div>
+                      <div class="fb-card-title">${t.kind === 'new_mail' ? '✉ New email' : t.kind === 'schedule' ? '⏱ Schedule' : t.kind === 'db_change' ? '🗄 Database change' : '▶ Run by hand'}</div>
                       <div class="fb-card-sub">${esc(triggerSummary())}${t.kind !== 'manual' && !t.enabled ? ' — paused' : ''}</div>
                     </div>`;
         html += dropZone(0);
@@ -492,11 +497,25 @@
         const src = mailSource(t.mail_source);
         const isGmail = src && src.source === 'gmail';
         const instant = !!(src && src.instant);
+        const dbChoices = [];
+        (state.palette || []).forEach((p) => {
+            if (p.service.startsWith('db:')) (p.templates || []).forEach((l) => dbChoices.push(p.service.slice(3) + '|' + l));
+        });
         el.innerHTML = `<h3>How this flow starts</h3>
             <div class="fb-radio">
               <label><input type="radio" name="fbKind" value="manual" ${t.kind === 'manual' ? 'checked' : ''}> When I run it</label>
               <label><input type="radio" name="fbKind" value="new_mail" ${t.kind === 'new_mail' ? 'checked' : ''}> When a new email arrives</label>
               <label><input type="radio" name="fbKind" value="schedule" ${t.kind === 'schedule' ? 'checked' : ''}> On a schedule</label>
+              <label><input type="radio" name="fbKind" value="db_change" ${t.kind === 'db_change' ? 'checked' : ''}> When a database record changes</label>
+            </div>
+            <div id="fbKindDb" class="${t.kind === 'db_change' ? '' : 'hidden'}">
+              <p class="fb-help">Each changed record starts the flow once, with the record as "what started the flow". Boudica checks with one of the database's lookups that has a ? for "changed since", e.g. <code>SELECT * FROM orders WHERE updated_at &gt; ?</code> (UTC); your administrator adds it under Data connections.</p>
+              ${dbChoices.length ? '' : '<p class="fb-warn">No database with lookups is set up for you yet: ask your administrator to add one under Data connections.</p>'}
+              <label class="fb-label">Database and lookup</label>
+              <select id="fbDbPick" class="agent-builder-input">
+                <option value="">Choose…</option>
+                ${dbChoices.map((c) => `<option value="${esc(c)}" ${c === t.db_connection + '|' + t.db_lookup ? 'selected' : ''}>${esc('db:' + c.replace('|', ' / '))}</option>`).join('')}
+              </select>
             </div>
             <div id="fbKindMail" class="${t.kind === 'new_mail' ? '' : 'hidden'}">
               ${hasMail ? '' : '<p class="fb-warn">Link a mailbox first: Boudica can only watch a mailbox that is yours.</p>'}
@@ -530,8 +549,8 @@
               <label class="fb-label">Text the flow starts with</label>
               <textarea id="fbPrompt" class="agent-builder-input" rows="3">${esc(t.prompt)}</textarea>
             </div>
-            <div id="fbKindPoll" class="${t.kind === 'new_mail' && !instant ? '' : 'hidden'}">
-              <label class="fb-label">Check for new email every</label>
+            <div id="fbKindPoll" class="${(t.kind === 'new_mail' && !instant) || t.kind === 'db_change' ? '' : 'hidden'}">
+              <label class="fb-label">${t.kind === 'db_change' ? 'Check for changes every' : 'Check for new email every'}</label>
               <div class="fb-row"><input id="fbMailEvery" type="number" min="2" class="agent-builder-input fb-num" value="${t.every_minutes > 0 ? t.every_minutes : 5}"> minutes</div>
             </div>
             <label class="fb-check ${t.kind === 'manual' ? 'hidden' : ''}" id="fbEnabledRow"><input type="checkbox" id="fbEnabled" ${t.enabled ? 'checked' : ''}> On (untick to pause)</label>
@@ -539,12 +558,18 @@
             ${sendAsHtml()}`;
         el.querySelectorAll('input[name="fbKind"]').forEach((r) => r.addEventListener('change', () => {
             t.kind = r.value;
-            if (t.kind === 'new_mail' && !(t.every_minutes > 0)) t.every_minutes = 5;
+            if ((t.kind === 'new_mail' || t.kind === 'db_change') && !(t.every_minutes > 0)) t.every_minutes = 5;
             state.dirty = true;
             renderAll();
         }));
         const bind = (id, fn) => { const x = $(id); if (x) x.addEventListener('input', () => { fn(x); state.dirty = true; renderCanvas(); }); };
         bind('fbMailQuery', (x) => { t.mail_query = x.value; });
+        const dbp = $('fbDbPick');
+        if (dbp) dbp.addEventListener('change', () => {
+            const [c, l] = dbp.value.split('|');
+            t.db_connection = c || ''; t.db_lookup = l || '';
+            state.dirty = true; renderCanvas();
+        });
         const sel = $('fbMailSource');
         if (sel) sel.addEventListener('change', () => { t.mail_source = sel.value; state.dirty = true; renderAll(); });
         $('fbLinkOpen')?.addEventListener('click', () => { state.linkOpen = true; renderInspector(); });
@@ -684,7 +709,8 @@
                     state.trigger = { trigger_id: tr.trigger_id, kind: tr.trigger_kind, every_minutes: tr.every_minutes,
                                       at_time: tr.at_time || '08:00', mail_query: tr.mail_query || 'in:inbox',
                                       mail_match: tr.mail_match || '', prompt: tr.prompt || '', enabled: tr.enabled,
-                                      mail_source: tr.mail_source || '' };
+                                      mail_source: tr.mail_source || '', db_connection: tr.db_connection || '',
+                                      db_lookup: tr.db_lookup || '' };
                 }
             } catch (e) { /* no triggers yet */ }
             if (state.steps.some((s) => s.service === 'notify')) {
@@ -808,6 +834,8 @@
         if (notify && !state.routes.some((r) => (r.recipient || '').trim()))
             return showError('The "Tell a colleague" step needs at least one route with someone to tell.');
         const t = state.trigger;
+        if (t.kind === 'db_change' && !(t.db_connection && t.db_lookup))
+            return showError('Choose the database and lookup that says which records changed (under Start).');
         if (t.kind === 'schedule' && !(t.every_minutes >= 2) && !/^([01]\d|2[0-3]):[0-5]\d$/.test(t.at_time))
             return showError('Give a repeat of 2 minutes or more, or a daily time as HH:MM.');
         const steps = state.steps.map((s, i) => ({
@@ -841,9 +869,10 @@
             } else {
                 const r = await Api().flows('triggers/save', {
                     trigger_id: t.trigger_id || 0, agent_name: a.agent_name, trigger_kind: t.kind,
-                    every_minutes: t.kind === 'new_mail' ? Math.max(2, t.every_minutes || 5) : (t.every_minutes || 0),
+                    every_minutes: (t.kind === 'new_mail' || t.kind === 'db_change') ? Math.max(2, t.every_minutes || 5) : (t.every_minutes || 0),
                     at_time: t.at_time, prompt: t.prompt, mail_query: t.mail_query, mail_match: t.mail_match, enabled: t.enabled,
                     mail_source: t.kind === 'new_mail' ? (t.mail_source || '') : '',
+                    db_connection: t.kind === 'db_change' ? t.db_connection : '', db_lookup: t.kind === 'db_change' ? t.db_lookup : '',
                 });
                 t.trigger_id = r.trigger.trigger_id;
             }

@@ -139,6 +139,19 @@ class TalkBotInvokeListener implements IEventListener {
             return;
         }
 
+        // Flows (2026-11-14): "@boudica @flowname ..." runs that flow as the
+        // person who wrote it; "@boudica flows" lists the ones they can run.
+        // Checked before every keyword shortcut below, so a flow message that
+        // mentions an email or a calendar still reaches the flow.
+        if (preg_match('/^\s*@([a-z0-9][a-z0-9_-]{1,39})(\s|$)/', $prompt)) {
+            $this->handleRunFlow($event, $message, $prompt, (string)$token);
+            return;
+        }
+        if (preg_match('/^\s*flows\s*$/i', $prompt)) {
+            $this->handleListFlows($event, $message);
+            return;
+        }
+
         // Handle tracking commands
         if (preg_match('/^\s*track\s+/i', $prompt)) {
             $this->handleTrackStart($event, $token, $senderName);
@@ -212,6 +225,70 @@ class TalkBotInvokeListener implements IEventListener {
         }
 
         $event->addAnswer($reply);
+    }
+
+    /**
+     * The Boudica account of the Talk message's author: a signed-in Nextcloud
+     * user only (never a guest, a federated user or another bot).
+     */
+    private function senderAccount(array $message): ?string {
+        $actorId = (string)($message['actor']['id'] ?? '');
+        if (!str_starts_with($actorId, 'users/')) {
+            return null;
+        }
+        $uid = substr($actorId, strlen('users/'));
+        $user = $this->userManager->get($uid);
+        if ($user === null) {
+            return null;
+        }
+        $email = (string)($user->getEMailAddress() ?? '');
+        if ($email === '' && str_contains($uid, '@')) {
+            $email = $uid;
+        }
+        return $email !== '' ? strtolower($email) : null;
+    }
+
+    private function handleRunFlow(Event $event, array $message, string $prompt, string $token): void {
+        $who = $this->senderAccount($message);
+        if ($who === null) {
+            $event->addAnswer('Flows can only be started by signed-in members of this organisation.');
+            return;
+        }
+        try {
+            $reply = $this->boudicaService->runFlowAs($who, trim($prompt), $token . '-' . md5($who));
+        } catch (\Throwable $e) {
+            $this->logger->warning('Boudica Talk flow failed: ' . $e->getMessage());
+            $reply = 'Sorry, that flow could not be run just now.';
+        }
+        if ($reply === null) {
+            $event->addAnswer('Flows from Talk are not switched on for this site yet (an administrator sets the Talk token).');
+            return;
+        }
+        $event->addAnswer($reply);
+    }
+
+    private function handleListFlows(Event $event, array $message): void {
+        $who = $this->senderAccount($message);
+        if ($who === null) {
+            $event->addAnswer('Flows can only be listed for signed-in members of this organisation.');
+            return;
+        }
+        try {
+            $flows = $this->boudicaService->listFlowsFor($who);
+        } catch (\Throwable $e) {
+            $this->logger->warning('Boudica Talk flow list failed: ' . $e->getMessage());
+            $flows = [];
+        }
+        if ($flows === null) {
+            $event->addAnswer('Flows from Talk are not switched on for this site yet (an administrator sets the Talk token).');
+            return;
+        }
+        if (!$flows) {
+            $event->addAnswer('You have no flows yet. Make one in the Boudica Agents app.');
+            return;
+        }
+        $lines = array_map(fn($a) => '- @' . $a['agent_name'] . (($a['display_name'] ?? '') !== '' && $a['display_name'] !== $a['agent_name'] ? ' (' . $a['display_name'] . ')' : ''), $flows);
+        $event->addAnswer("Flows you can run here (write @boudica @name and what it needs):\n" . implode("\n", array_slice($lines, 0, 30)));
     }
 
     private function logMessage(string $token, ?string $messageId, string $actorName, string $message, bool $isSystem): void {
