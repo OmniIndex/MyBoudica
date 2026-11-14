@@ -38,7 +38,7 @@
     ];
     const ICON = {
         gmail: '✉', outlook: '✉', gcalendar: '📅', rag: '📚', web: '🌐',
-        reasoning: '💡', notify: '💬',
+        reasoning: '💡', notify: '💬', email: '📧',
     };
 
     let state = null;
@@ -326,9 +326,26 @@
                   ${tile.templates.map((t) => `<option value="${esc(t)}" ${t === cur.toLowerCase() ? 'selected' : ''}>${esc(t)}</option>`).join('')}
                 </select>`;
         }
+        if (s.service === 'email') {
+            // "Send an email" (2026-11-14): a fixed message, sent from your own
+            // mailbox ("Replies sent as me" under Start) to addresses in the record.
+            let f = {};
+            try { f = JSON.parse(s.query_template || '{}'); } catch (e) {
+                // Saved steps come back JSON-escaped ({\"to\": ...}): undo one layer.
+                try { f = JSON.parse(JSON.parse('"' + s.query_template + '"')); } catch (e2) { f = {}; }
+            }
+            html += `<p class="fb-help">Boudica sends exactly this message from your own mailbox (choose it under Start: "Replies sent as me"). Put a field name in curly brackets, like {order_no} or {contact_name}, where a value from the record goes. If the record has no value for one, nothing is sent. Each person gets this email once per record.</p>
+                <label class="fb-label">Send to <span class="fb-help-inline">(names of fields that hold email addresses, separated by commas, e.g. contact_email, account_manager_email; for an email that started the flow: sender_email)</span></label>
+                <input id="fbEmailTo" class="agent-builder-input" value="${esc((f.to || []).join(', '))}" placeholder="contact_email, account_manager_email">
+                <label class="fb-label">Subject</label>
+                <input id="fbEmailSubject" class="agent-builder-input" value="${esc(f.subject || '')}" placeholder="Your order {order_no}">
+                <label class="fb-label">Message</label>
+                <textarea id="fbEmailBody" class="agent-builder-input fb-query" rows="9" placeholder="Dear {contact_name},&#10;&#10;Thank you for your order {order_no}: {items}.&#10;Total: £{total_gbp}.&#10;&#10;Kind regards">${esc(f.body || '')}</textarea>`;
+        } else {
         html += `<label class="fb-label">${s.service === 'notify' ? 'What the colleague needs to know (sent to the model that writes the message)' : 'What this step does'}</label>
             <textarea id="fbStepQuery" class="agent-builder-input fb-query" rows="7">${esc(s.query_template)}</textarea>
             <div class="fb-chips">Insert: ${refs.map((r) => `<button type="button" class="fb-chip" data-ins="${esc(r)}">${r === '{{input}}' ? 'what started the flow' : 'step ' + r.match(/\d+/)[0] + ' result'}</button>`).join('')}</div>`;
+        }
         if (idx > 0) {
             html += `<label class="fb-label">Waits for</label><div class="fb-deps">` +
                 Array.from({ length: idx }, (_, i) => i + 1).map((d) =>
@@ -339,7 +356,16 @@
         el.innerHTML = html;
 
         $('fbStepDesc').addEventListener('input', (e) => { s.description = e.target.value; state.dirty = true; renderCanvas(); });
-        $('fbStepQuery').addEventListener('input', (e) => { s.query_template = e.target.value; state.dirty = true; });
+        $('fbStepQuery')?.addEventListener('input', (e) => { s.query_template = e.target.value; state.dirty = true; });
+        if (s.service === 'email') {
+            const save = () => {
+                s.query_template = JSON.stringify({
+                    to: $('fbEmailTo').value.split(',').map((x) => x.trim()).filter((x) => /^[A-Za-z0-9_]{1,60}$/.test(x)).slice(0, 5),
+                    subject: $('fbEmailSubject').value, body: $('fbEmailBody').value }, null, 2);
+                state.dirty = true;
+            };
+            ['fbEmailTo', 'fbEmailSubject', 'fbEmailBody'].forEach((id) => $(id).addEventListener('input', save));
+        }
         const tpl = $('fbTemplate');
         if (tpl) tpl.addEventListener('change', () => {
             const prev = idx > 0 ? `{{task${idx}.result}}` : '{{input}}';
