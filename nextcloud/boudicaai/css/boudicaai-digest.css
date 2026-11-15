@@ -145,3 +145,16 @@
   .bd-mail-row { grid-template-columns: 1fr; gap: 2px; }
   .bd-mail-text { white-space: normal; }
 }
+
+/* Outgoing email held for the sender's decision (2026-11-15) */
+.bd-mail-held { margin: 8px 0 12px; padding: 10px 12px; border-radius: 8px;
+    border: 1px solid var(--color-warning, #c28a00); background: var(--color-warning-hover, rgba(194, 138, 0, 0.08)); }
+.bd-mail-held-head { font-weight: 600; margin-bottom: 6px; }
+.bd-mail-held-row { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between;
+    padding: 6px 0; border-top: 1px solid var(--color-border, #ddd); flex-wrap: wrap; }
+.bd-mail-held-row:first-of-type { border-top: 0; }
+.bd-mail-held-text { flex: 1 1 260px; min-width: 0; }
+.bd-mail-held-subject { font-weight: 500; overflow-wrap: anywhere; }
+.bd-mail-held-issues { margin: 4px 0 0 18px; list-style: disc; color: var(--color-text-maxcontrast, #555); }
+.bd-mail-held-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.bd-mail-held-status { color: var(--color-text-maxcontrast, #555); }

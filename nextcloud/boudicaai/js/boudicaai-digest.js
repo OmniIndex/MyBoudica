@@ -208,6 +208,57 @@
         return b;
     }
 
+    // Outgoing email Boudica Mail held before it left (2026-11-15): the person
+    // sends it as it is, or discards it. Nothing is sent until they choose.
+    const HELD_STATUS = { send: 'Sending…', discard: 'Discarding…', sent: 'Sent', discarded: 'Discarded',
+                          expired: 'Discarded after 7 days', gone: 'No longer in the mail queue' };
+
+    function renderHeld(mb) {
+        const held = mb.held || [];
+        if (!held.length) return null;
+        const box = node('div', 'bd-mail-held');
+        const waiting = held.filter(h => h.status === 'held').length;
+        box.appendChild(node('div', 'bd-mail-held-head',
+            waiting ? 'Waiting to be sent (' + waiting + '): Boudica held ' + (waiting === 1 ? 'this email' : 'these emails') + ' before ' + (waiting === 1 ? 'it' : 'they') + ' left'
+                    : 'Held email (recent decisions)'));
+        held.forEach(h => {
+            const row = node('div', 'bd-mail-held-row');
+            const text = node('div', 'bd-mail-held-text');
+            text.appendChild(node('div', 'bd-mail-held-subject', (h.subject || '(no subject)') + ' → ' + (h.to || '')));
+            const ul = node('ul', 'bd-mail-held-issues');
+            (h.issues || []).forEach(i => ul.appendChild(node('li', '', i)));
+            text.appendChild(ul);
+            row.appendChild(text);
+            const act = node('div', 'bd-mail-held-actions');
+            if (h.status === 'held') {
+                const msg = node('span', 'bd-mail-link-msg');
+                const decide = (action, btn) => {
+                    if (action === 'send' && !window.confirm('Send this email as it is?')) return;
+                    act.querySelectorAll('button').forEach(b => { b.disabled = true; });
+                    msg.textContent = action === 'send' ? 'Sending…' : 'Discarding…';
+                    fetch(OC.generateUrl('/apps/boudicaai/digest/mail/held'), {
+                        method: 'POST', credentials: 'same-origin',
+                        headers: { 'Content-Type': 'application/json', requesttoken: OC.requestToken },
+                        body: JSON.stringify({ email: mb.email, id: h.id, action }),
+                    }).then(r => r.json()).then(d => {
+                        if (d.ok) { msg.textContent = action === 'send' ? 'Sent to the mail queue.' : 'Discarded.'; setTimeout(loadMail, 15000); }
+                        else { msg.textContent = d.error || 'Not done.'; act.querySelectorAll('button').forEach(b => { b.disabled = false; }); }
+                    }).catch(() => { msg.textContent = 'Could not reach the server.'; act.querySelectorAll('button').forEach(b => { b.disabled = false; }); });
+                };
+                const send = node('button', 'btn btn-primary', 'Send it');
+                const discard = node('button', 'btn btn-secondary', 'Discard');
+                send.addEventListener('click', () => decide('send', send));
+                discard.addEventListener('click', () => decide('discard', discard));
+                [send, discard, msg].forEach(x => act.appendChild(x));
+            } else {
+                act.appendChild(node('span', 'bd-mail-held-status', HELD_STATUS[h.status] || h.status));
+            }
+            row.appendChild(act);
+            box.appendChild(row);
+        });
+        return box;
+    }
+
     function renderMail(data) {
         const root = el('bdMailDigest');
         if (!root) return;
@@ -234,6 +285,8 @@
             }
             if (mb.source === 'linked') head.appendChild(unlinkButton(mb.email));
             sec.appendChild(head);
+            const heldBox = mb.ok ? renderHeld(mb) : null;
+            if (heldBox) sec.appendChild(heldBox);
             if (!mb.ok) {
                 sec.appendChild(node('div', 'bd-digest-error', mb.error || 'Could not load this mailbox.'));
             } else if (!items.length) {

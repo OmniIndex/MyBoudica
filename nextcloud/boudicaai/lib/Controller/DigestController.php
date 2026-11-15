@@ -98,4 +98,16 @@ class DigestController extends Controller {
         $this->mailDigestService->unlink($user->getUID(), $email);
         return new DataResponse(['ok' => true]);
     }
+
+    /** Send or discard an outgoing email Boudica Mail held (2026-11-15). */
+    #[NoAdminRequired]
+    #[OpenAPI(OpenAPI::SCOPE_IGNORE)]
+    #[FrontpageRoute(verb: 'POST', url: '/digest/mail/held')]
+    public function mailHeld(string $email = '', int $id = 0, string $action = ''): DataResponse {
+        $user = $this->userSession->getUser();
+        if ($user === null) {
+            return new DataResponse(['ok' => false, 'error' => 'Sign in first.'], 401);
+        }
+        return new DataResponse($this->mailDigestService->decideHeld($user->getUID(), $email, $id, $action));
+    }
 }

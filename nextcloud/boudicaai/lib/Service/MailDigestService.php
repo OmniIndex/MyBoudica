@@ -124,7 +124,8 @@ class MailDigestService {
             $status = $resp->getStatusCode();
             $data = json_decode((string)$resp->getBody(), true);
             if ($status === 200 && is_array($data) && is_array($data['items'] ?? null)) {
-                return ['ok' => true, 'status' => 200, 'items' => $data['items']];
+                return ['ok' => true, 'status' => 200, 'items' => $data['items'],
+                        'held' => is_array($data['held'] ?? null) ? $data['held'] : []];
             }
             $msg = match ($status) {
                 401 => 'The mail server did not accept this mailbox\'s app password.',
@@ -147,9 +148,52 @@ class MailDigestService {
         foreach ($this->mailboxes($userId) as $mb) {
             $r = $this->fetch($mb['host'], $mb['email'], $mb['password']);
             $boxes[] = ['email' => $mb['email'], 'source' => $mb['source'], 'ok' => $r['ok'],
-                        'items' => $r['items'] ?? [], 'error' => $r['error'] ?? ''];
+                        'items' => $r['items'] ?? [], 'held' => $r['held'] ?? [], 'error' => $r['error'] ?? ''];
         }
         return ['mailboxes' => $boxes, 'hosts' => $this->allowedHosts()];
+    }
+
+    /**
+     * Send or discard an outgoing email the mail server held (2026-11-15).
+     * Only for one of this user's own mailboxes, with that mailbox's own
+     * app password; the mail server checks it again and that the email is
+     * the mailbox's and still waiting.
+     * @return array{ok: bool, error?: string}
+     */
+    public function decideHeld(string $userId, string $email, int $id, string $action): array {
+        $email = strtolower(trim($email));
+        if ($id <= 0 || !in_array($action, ['send', 'discard'], true)) {
+            return ['ok' => false, 'error' => 'Choose send or discard.'];
+        }
+        foreach ($this->mailboxes($userId) as $mb) {
+            if ($mb['email'] !== $email) {
+                continue;
+            }
+            try {
+                $base = rtrim($this->appConfig->getValueString('boudicaai', 'mail_digest_base_url', ''), '/');
+                $url = ($base !== '' ? $base : 'https://' . $mb['host']) . '/api/held';
+                $resp = $this->clients->newClient()->post($url, [
+                    'auth' => [$mb['email'], $mb['password']],
+                    'timeout' => 15,
+                    'http_errors' => false,
+                    'headers' => ['Accept' => 'application/json', 'Content-Type' => 'application/json'],
+                    'body' => json_encode(['id' => $id, 'action' => $action]),
+                ]);
+                $status = $resp->getStatusCode();
+                if ($status === 200) {
+                    return ['ok' => true];
+                }
+                return ['ok' => false, 'error' => match ($status) {
+                    409 => 'That email is not waiting any more.',
+                    401 => 'The mail server did not accept this mailbox\'s app password.',
+                    default => 'The mail server did not answer (' . $status . ').',
+                }];
+            } catch (\Throwable $e) {
+                $this->logger->warning('Boudica Mail held email: ' . $mb['host'] . ' unreachable: ' . $e->getMessage());
+                return ['ok' => false, 'error' => 'The mail server could not be reached.'];
+            }
+        }
+        return ['ok' => false, 'error' => 'That mailbox is not connected here.'];
     }
 
     /** Link a mailbox from the digest page (the password is checked first). */
