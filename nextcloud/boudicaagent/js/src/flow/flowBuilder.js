@@ -340,7 +340,8 @@
                 <label class="fb-label">Subject</label>
                 <input id="fbEmailSubject" class="agent-builder-input" value="${esc(f.subject || '')}" placeholder="Your order {order_no}">
                 <label class="fb-label">Message</label>
-                <textarea id="fbEmailBody" class="agent-builder-input fb-query" rows="9" placeholder="Dear {contact_name},&#10;&#10;Thank you for your order {order_no}: {items}.&#10;Total: £{total_gbp}.&#10;&#10;Kind regards">${esc(f.body || '')}</textarea>`;
+                <textarea id="fbEmailBody" class="agent-builder-input fb-query" rows="9" placeholder="Dear {contact_name},&#10;&#10;Thank you for your order {order_no}: {items}.&#10;Total: £{total_gbp}.&#10;&#10;Kind regards">${esc(f.body || '')}</textarea>
+                <div id="fbEmailFields" class="fb-chips"></div>`;
         } else {
         html += `<label class="fb-label">${s.service === 'notify' ? 'What the colleague needs to know (sent to the model that writes the message)' : 'What this step does'}</label>
             <textarea id="fbStepQuery" class="agent-builder-input fb-query" rows="7">${esc(s.query_template)}</textarea>
@@ -364,7 +365,11 @@
                     subject: $('fbEmailSubject').value, body: $('fbEmailBody').value }, null, 2);
                 state.dirty = true;
             };
-            ['fbEmailTo', 'fbEmailSubject', 'fbEmailBody'].forEach((id) => $(id).addEventListener('input', save));
+            ['fbEmailTo', 'fbEmailSubject', 'fbEmailBody'].forEach((id) => {
+                $(id).addEventListener('input', save);
+                $(id).addEventListener('focus', () => { state.emailFocus = id; });
+            });
+            showEmailFieldChips(idx);
         }
         const tpl = $('fbTemplate');
         if (tpl) tpl.addEventListener('change', () => {
@@ -858,6 +863,112 @@
         el.classList.toggle('hidden', !msg);
     }
 
+    // ── "Send an email" field check (2026-11-15) ──────────────────────────
+    // An email step names fields of the record (who to send to, {places} in
+    // the subject and message). The server says which fields the record can
+    // have: the database-change lookup's columns, the email's own fields, and
+    // the columns of fixed database lookups before the step (column names
+    // only, no records are read). A name the record cannot have would mean
+    // the email is never sent, so Save stops and says which names are wrong.
+    function emailSpec(s) {
+        try { return JSON.parse(s.query_template || '{}'); } catch (e) {
+            try { return JSON.parse(JSON.parse('"' + s.query_template + '"')); } catch (e2) { return {}; }
+        }
+    }
+    function emailNames(f) {
+        const places = new Set();
+        `${f.subject || ''}\n${f.body || ''}`.replace(/\{([A-Za-z0-9_]{1,60})\}/g, (m, n) => { places.add(n); return m; });
+        return { to: (f.to || []).filter((x) => /^[A-Za-z0-9_]{1,60}$/.test(x)), places: [...places] };
+    }
+    function fixedLookup(s) {
+        if (!s.service.startsWith('db:')) return null;
+        const m = (s.query_template || '').match(/^\s*template:([a-z0-9_]+)/i);
+        return { connection: s.service.slice(3), lookup: m ? m[1].toLowerCase() : '' };
+    }
+    async function recordFields(upToIdx) {
+        const t = state.trigger;
+        const earlier = state.steps.slice(0, upToIdx).map(fixedLookup).filter(Boolean);
+        const r = await Api().flows('fields', {
+            trigger_kind: t.kind, db_connection: t.db_connection || '', db_lookup: t.db_lookup || '',
+            lookups: earlier.filter((l) => l.lookup) });
+        const sources = [r.trigger, ...(r.lookups || [])].filter(Boolean);
+        const known = new Set();
+        sources.forEach((src) => (src.fields || []).forEach((x) => known.add(String(x))));
+        return { known, sources,
+                 unchecked: sources.filter((src) => !src.checked),
+                 freeQuestion: earlier.some((l) => !l.lookup) };   // its columns cannot be known
+    }
+    function closeNames(name, known) {
+        const d = (a, b) => {   // edit distance
+            const m = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+            for (let j = 1; j <= b.length; j++) m[0][j] = j;
+            for (let i = 1; i <= a.length; i++)
+                for (let j = 1; j <= b.length; j++)
+                    m[i][j] = Math.min(m[i - 1][j] + 1, m[i][j - 1] + 1, m[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+            return m[a.length][b.length];
+        };
+        const n = name.toLowerCase();
+        return [...known].filter((k) => d(n, k.toLowerCase()) <= Math.max(2, Math.floor(n.length / 4))).slice(0, 3);
+    }
+    // problem: why Save must stop ('' when fine); note: what could not be checked.
+    async function checkEmailFields() {
+        const problems = [], notes = [];
+        for (let i = 0; i < state.steps.length; i++) {
+            const s = state.steps[i];
+            if (s.service !== 'email') continue;
+            const names = emailNames(emailSpec(s));
+            let rf;
+            try { rf = await recordFields(i); } catch (e) {
+                notes.push(`Step ${i + 1}: the field names could not be checked just now (${e.message || e}).`);
+                continue;
+            }
+            rf.unchecked.forEach((src) => notes.push(`Step ${i + 1}: ${src.label} could not be checked (${src.error || 'no answer'}).`));
+            if (rf.unchecked.length || rf.freeQuestion) continue;   // cannot be sure a name is wrong
+            const bad = (n) => !rf.known.has(n);
+            const say = (n) => {
+                const near = closeNames(n, rf.known);
+                return near.length ? `${n} (did you mean ${near.join(' or ')}?)` : n;
+            };
+            const badTo = names.to.filter(bad), badPlaces = names.places.filter(bad);
+            if (!badTo.length && !badPlaces.length) continue;
+            let msg = `Step ${i + 1} "${s.description || 'Send an email'}": `;
+            if (badTo.length) msg += `"Send to" names ${badTo.length > 1 ? 'fields' : 'a field'} the record does not have: ${badTo.map(say).join(', ')}. `;
+            if (badPlaces.length) msg += `The subject or message uses ${badPlaces.map((n) => '{' + n + '}').join(', ')}, which the record does not have. `;
+            msg += rf.known.size ? `The record's fields are: ${[...rf.known].join(', ')}.` : 'No record fields are known for this step.';
+            problems.push(msg);
+        }
+        return { problem: problems.join('\n'), note: notes.join('\n') };
+    }
+
+    // The fields an email step can use, shown under the step (click to insert).
+    async function showEmailFieldChips(idx) {
+        const box = $('fbEmailFields');
+        if (!box) return;
+        box.textContent = 'Fields from the record: checking…';
+        let rf;
+        try { rf = await recordFields(idx); } catch (e) { box.textContent = ''; return; }
+        if ($('fbEmailFields') !== box) return;   // the inspector changed meanwhile
+        const extra = rf.freeQuestion ? ' A database question before this step may add other fields.' : '';
+        const unchecked = rf.unchecked.length ? ` (${rf.unchecked.map((x) => x.label).join(', ')} could not be checked)` : '';
+        if (!rf.known.size) { box.textContent = `No record fields are known for this step${unchecked}.${extra}`; return; }
+        box.innerHTML = `Fields from the record${esc(unchecked)}: ` +
+            [...rf.known].map((n) => `<button type="button" class="fb-chip" data-field="${esc(n)}">${esc(n)}</button>`).join('') + esc(extra);
+        box.querySelectorAll('[data-field]').forEach((b) => b.addEventListener('click', () => {
+            const n = b.dataset.field;
+            const target = (state.emailFocus && $(state.emailFocus)) || $('fbEmailBody');
+            if (target.id === 'fbEmailTo') {
+                const cur = target.value.split(',').map((x) => x.trim()).filter(Boolean);
+                if (!cur.includes(n)) cur.push(n);
+                target.value = cur.join(', ');
+            } else {
+                const at = target.selectionStart ?? target.value.length;
+                target.value = target.value.slice(0, at) + `{${n}}` + target.value.slice(target.selectionEnd ?? at);
+            }
+            target.dispatchEvent(new Event('input'));
+            target.focus();
+        }));
+    }
+
     async function saveFlow() {
         showError(''); showNote('');
         const a = state.agent;
@@ -885,6 +996,12 @@
         }));
         const btn = $('flowSaveBtn');
         btn.disabled = true;
+        let fieldNote = '';
+        if (state.steps.some((s) => s.service === 'email')) {
+            const chk = await checkEmailFields();
+            if (chk.problem) { btn.disabled = false; return showError(chk.problem); }
+            fieldNote = chk.note;
+        }
         try {
             const saved = await Api().saveAgent({ agent_id: a.agent_id || 0, agent_name: a.agent_name,
                                                    display_name: a.display_name, description: a.description, steps });
@@ -915,7 +1032,8 @@
                 t.trigger_id = r.trigger.trigger_id;
             }
             state.dirty = false;
-            showNote(`Saved. Run it with @${a.agent_name} in chat${t.kind === 'manual' ? '' : ', and it also starts on its own: ' + triggerSummary().replace(/^./, (c) => c.toLowerCase())}.`);
+            showNote(`Saved. Run it with @${a.agent_name} in chat${t.kind === 'manual' ? '' : ', and it also starts on its own: ' + triggerSummary().replace(/^./, (c) => c.toLowerCase())}.` +
+                     (fieldNote ? `\n${fieldNote}` : ''));
             renderAll();
             loadActivity();
         } catch (e) {
