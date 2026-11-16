@@ -99,7 +99,7 @@ class DigestController extends Controller {
         return new DataResponse(['ok' => true]);
     }
 
-    /** Send or discard an outgoing email Boudica Mail held (2026-11-15). */
+    /** Send, edit (back to Drafts) or discard an outgoing email Boudica Mail held (2026-11-15). */
     #[NoAdminRequired]
     #[OpenAPI(OpenAPI::SCOPE_IGNORE)]
     #[FrontpageRoute(verb: 'POST', url: '/digest/mail/held')]

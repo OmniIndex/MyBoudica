@@ -154,7 +154,8 @@ class MailDigestService {
     }
 
     /**
-     * Send or discard an outgoing email the mail server held (2026-11-15).
+     * Send, edit or discard an outgoing email the mail server held (2026-11-15;
+     * edit 2026-11-16: it goes back to the mailbox's Drafts folder).
      * Only for one of this user's own mailboxes, with that mailbox's own
      * app password; the mail server checks it again and that the email is
      * the mailbox's and still waiting.
@@ -162,8 +163,8 @@ class MailDigestService {
      */
     public function decideHeld(string $userId, string $email, int $id, string $action): array {
         $email = strtolower(trim($email));
-        if ($id <= 0 || !in_array($action, ['send', 'discard'], true)) {
-            return ['ok' => false, 'error' => 'Choose send or discard.'];
+        if ($id <= 0 || !in_array($action, ['send', 'discard', 'edit'], true)) {
+            return ['ok' => false, 'error' => 'Choose send, edit or discard.'];
         }
         foreach ($this->mailboxes($userId) as $mb) {
             if ($mb['email'] !== $email) {

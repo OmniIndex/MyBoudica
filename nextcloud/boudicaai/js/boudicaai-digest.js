@@ -209,9 +209,16 @@
     }
 
     // Outgoing email Boudica Mail held before it left (2026-11-15): the person
-    // sends it as it is, or discards it. Nothing is sent until they choose.
+    // sends it as it is, edits it (2026-11-16: it goes back to their Drafts
+    // folder, to change and send again) or discards it. Nothing is sent until
+    // they choose.
     const HELD_STATUS = { send: 'Sending…', discard: 'Discarding…', sent: 'Sent', discarded: 'Discarded',
+                          edit: 'Moving to Drafts…', edit_ready: 'Moving to Drafts…',
+                          edited: 'In your Drafts folder: change it there and send it again',
                           expired: 'Discarded after 7 days', gone: 'No longer in the mail queue' };
+    const HELD_DOING = { send: 'Sending…', discard: 'Discarding…', edit: 'Moving to Drafts…' };
+    const HELD_DONE = { send: 'Sent to the mail queue.', discard: 'Discarded.',
+                        edit: 'Moved to your Drafts folder in a minute: open it in Mail, change it and send it again.' };
 
     function renderHeld(mb) {
         const held = mb.held || [];
@@ -235,21 +242,24 @@
                 const decide = (action, btn) => {
                     if (action === 'send' && !window.confirm('Send this email as it is?')) return;
                     act.querySelectorAll('button').forEach(b => { b.disabled = true; });
-                    msg.textContent = action === 'send' ? 'Sending…' : 'Discarding…';
+                    msg.textContent = HELD_DOING[action];
                     fetch(OC.generateUrl('/apps/boudicaai/digest/mail/held'), {
                         method: 'POST', credentials: 'same-origin',
                         headers: { 'Content-Type': 'application/json', requesttoken: OC.requestToken },
                         body: JSON.stringify({ email: mb.email, id: h.id, action }),
                     }).then(r => r.json()).then(d => {
-                        if (d.ok) { msg.textContent = action === 'send' ? 'Sent to the mail queue.' : 'Discarded.'; setTimeout(loadMail, 15000); }
+                        if (d.ok) { msg.textContent = HELD_DONE[action]; setTimeout(loadMail, 15000); }
                         else { msg.textContent = d.error || 'Not done.'; act.querySelectorAll('button').forEach(b => { b.disabled = false; }); }
                     }).catch(() => { msg.textContent = 'Could not reach the server.'; act.querySelectorAll('button').forEach(b => { b.disabled = false; }); });
                 };
                 const send = node('button', 'btn btn-primary', 'Send it');
+                const edit = node('button', 'btn btn-secondary', 'Edit');
+                edit.title = 'Put it back in your Drafts folder to change it (add the attachment...) and send it again';
                 const discard = node('button', 'btn btn-secondary', 'Discard');
                 send.addEventListener('click', () => decide('send', send));
+                edit.addEventListener('click', () => decide('edit', edit));
                 discard.addEventListener('click', () => decide('discard', discard));
-                [send, discard, msg].forEach(x => act.appendChild(x));
+                [send, edit, discard, msg].forEach(x => act.appendChild(x));
             } else {
                 act.appendChild(node('span', 'bd-mail-held-status', HELD_STATUS[h.status] || h.status));
             }
