@@ -63,6 +63,21 @@ class Application extends App implements IBootstrap {
         // own docblock. Previously only ever set up once, by hand, for a
         // single test account.
         $context->registerEventListener(UserFirstTimeLoggedInEvent::class, RagStorageMountListener::class);
+
+        // Nextcloud's AI tasks (Mail's thread summary, smart replies, ...) on
+        // Boudica (2026-11-16, Boudica Mail phase 3c): only once an admin has
+        // set nc_task_token, so installing or upgrading never switches AI on.
+        try {
+            $token = \OCP\Server::get(\OCP\IAppConfig::class)->getValueString(self::APP_ID, 'nc_task_token', '');
+        } catch (\Throwable $e) {
+            $token = '';
+        }
+        if (strlen($token) >= 32) {
+            $context->registerTaskProcessingProvider(\OCA\BoudicaAi\TaskProcessing\TextToTextProvider::class);
+            $context->registerTaskProcessingProvider(\OCA\BoudicaAi\TaskProcessing\SummaryProvider::class);
+            $context->registerTaskProcessingProvider(\OCA\BoudicaAi\TaskProcessing\HeadlineProvider::class);
+            $context->registerTaskProcessingProvider(\OCA\BoudicaAi\TaskProcessing\ReformulationProvider::class);
+        }
     }
 
     public function boot(IBootContext $context): void {
