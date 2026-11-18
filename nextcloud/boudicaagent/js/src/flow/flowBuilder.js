@@ -33,13 +33,74 @@
     const GROUPS = [
         { key: 'read', title: 'Read' },
         { key: 'apps', title: 'Boudica Apps' },
+        { key: 'decide', title: 'Decide' },
         { key: 'think', title: 'Think' },
         { key: 'act', title: 'Act' },
     ];
     const ICON = {
         gmail: '✉', outlook: '✉', gcalendar: '📅', rag: '📚', web: '🌐',
-        reasoning: '💡', notify: '💬', email: '📧',
+        reasoning: '💡', notify: '💬', email: '📧', if: '🔀',
     };
+
+    // ── If step (2026-11-18) ──────────────────────────────────────────────
+    // A step with service "if" checks one thing (its text, one line, read by
+    // src/flow_if.hpp on the server). A later step can belong to one of its
+    // branches: in the builder that is s.branchOf (the If step's uid) and
+    // s.branchSide ('then' | 'else'); saved as branch "N:then" / "N:else"
+    // with N the If step's position. Kept by uid so moving steps keeps it.
+    const IF_KINDS = [
+        { key: 'found', label: 'something was found' },
+        { key: 'not found', label: 'nothing was found' },
+        { key: 'contains', label: 'it mentions any of these words' },
+        { key: 'field', label: 'a field has a value' },
+        { key: 'ask', label: 'Boudica answers a yes/no question (a model decision)' },
+    ];
+    function parseIf(text) {
+        const t = String(text || '').trim();
+        const l = t.toLowerCase();
+        if (l === 'found') return { kind: 'found' };
+        if (l === 'not found' || l === 'nothing found') return { kind: 'not found' };
+        if (l.startsWith('contains:')) return { kind: 'contains', words: t.slice(9).trim() };
+        if (l.startsWith('field:')) {
+            const m = t.slice(6).trim().match(/^([A-Za-z0-9_][A-Za-z0-9_ ]{0,59}?)\s*(>=|<=|!=|=|>|<)\s*(.*)$/);
+            return m ? { kind: 'field', field: m[1].trim(), op: m[2], value: m[3].trim() }
+                     : { kind: 'field', field: '', op: '=', value: '' };
+        }
+        if (l.startsWith('ask:')) return { kind: 'ask', question: t.slice(4).trim() };
+        return { kind: 'found' };
+    }
+    function ifText(c) {
+        if (c.kind === 'contains') return `contains: ${(c.words || '').trim()}`;
+        if (c.kind === 'field') return `field: ${(c.field || '').trim()} ${c.op || '='} ${(c.value || '').trim()}`;
+        if (c.kind === 'ask') return `ask: ${(c.question || '').trim().replace(/\s+/g, ' ')}`;
+        return c.kind;
+    }
+    // What is wrong with an If step's check, or ''.
+    function ifProblem(c) {
+        if (c.kind === 'contains' && !(c.words || '').trim()) return 'say which words to look for';
+        if (c.kind === 'field' && !/^[A-Za-z0-9_][A-Za-z0-9_ ]{0,59}$/.test((c.field || '').trim())) return 'give the field name (letters, digits, _)';
+        if (c.kind === 'field' && !(c.value || '').trim()) return 'give the value to compare with';
+        if (c.kind === 'ask' && !(c.question || '').trim()) return 'write the yes-or-no question';
+        return '';
+    }
+    function ifSummary(s) {
+        const c = parseIf(s.query_template);
+        const what = s.depends.length ? `step ${s.depends[0]}` : 'what started the flow';
+        if (c.kind === 'contains') return `if ${what} mentions ${c.words || '…'}`;
+        if (c.kind === 'field') return `if ${c.field || 'a field'} ${c.op} ${c.value || '…'}`;
+        if (c.kind === 'ask') return `if Boudica says yes: ${c.question || '…'}`;
+        return c.kind === 'not found' ? `if ${what} found nothing` : `if ${what} found something`;
+    }
+    function posOf(uid) { return state.steps.findIndex((x) => x.uid === uid) + 1; }
+    // A step's branch is only valid while its If step is above it.
+    function cleanBranches() {
+        state.steps.forEach((s, i) => {
+            if (!s.branchOf) return;
+            const p = posOf(s.branchOf);
+            const owner = state.steps[p - 1];
+            if (!p || p > i || !owner || owner.service !== 'if') { s.branchOf = 0; s.branchSide = ''; }
+        });
+    }
 
     let state = null;
     let uidCounter = 1;
@@ -120,9 +181,21 @@
     }
 
     // ── Steps ─────────────────────────────────────────────────────────────
+    // The step a new step should read from: the one above it, but never an If
+    // step (its result is only the yes/no report) - then whatever that If step
+    // was checking. 0 = what started the flow.
+    function sourceFor(position) {
+        let p = position;
+        while (p > 0 && state.steps[p - 1] && state.steps[p - 1].service === 'if')
+            p = state.steps[p - 1].depends[0] || 0;
+        return p;
+    }
+
     function defaultQuery(tile, position) {
-        const prev = position > 0 ? `{{task${position}.result}}` : '{{input}}';
         const s = tile.service;
+        if (s === 'if') return 'found';
+        if (s !== 'notify') position = sourceFor(position);
+        const prev = position > 0 ? `{{task${position}.result}}` : '{{input}}';
         if (s === 'notify') {
             const parts = ['What came in:\n{{input}}'];
             for (let i = 1; i <= position; i++) parts.push(`Step ${i} found:\n{{task${i}.result}}`);
@@ -145,7 +218,8 @@
             service: tile.service,
             description: tile.label,
             query_template: defaultQuery(tile, at),
-            depends: at > 0 ? [at] : [],
+            depends: (() => { const p = tile.service === 'if' ? at : sourceFor(at); return p > 0 ? [p] : []; })(),
+            branchOf: 0, branchSide: '',
         };
         // Steps after the insert point move down one: shift their references.
         state.steps.forEach((s) => {
@@ -153,6 +227,13 @@
             s.query_template = shiftRefs(s.query_template, at, +1);
         });
         state.steps.splice(at, 0, step);
+        // A step dropped straight under an If step, or inside one of its
+        // branches, joins that branch ("then" when straight under it).
+        const above = state.steps[at - 1];
+        if (above && tile.service !== 'if') {
+            if (above.service === 'if') { step.branchOf = above.uid; step.branchSide = 'then'; }
+            else if (above.branchOf) { step.branchOf = above.branchOf; step.branchSide = above.branchSide; }
+        }
         state.selected = step.uid;
         state.dirty = true;
         if (tile.service === 'notify') loadRoutes();
@@ -175,6 +256,7 @@
         state.steps.forEach((s) => {
             s.depends = s.depends.filter((d) => d !== pos).map((d) => (d > pos ? d - 1 : d));
             s.query_template = shiftRefs(s.query_template, pos, -1);
+            if (s.branchOf === uid) { s.branchOf = 0; s.branchSide = ''; }   // its If step is gone
         });
         state.selected = 'start';
         state.dirty = true;
@@ -200,6 +282,7 @@
         state.steps = order.map((u) => state.steps.find((s) => s.uid === u));
         // A step can only use results of steps above it.
         state.steps.forEach((s, i) => { s.depends = s.depends.filter((d) => d <= i); });
+        cleanBranches();
         state.dirty = true;
         renderAll();
     }
@@ -236,10 +319,14 @@
         html += dropZone(0);
         state.steps.forEach((s, i) => {
             const tile = tileFor(s.service);
-            const uses = s.depends.length ? `uses ${s.depends.map((d) => 'step ' + d).join(', ')}` :
+            let uses = s.depends.length ? `uses ${s.depends.map((d) => 'step ' + d).join(', ')}` :
                 (i === 0 ? 'uses what started the flow' : 'uses nothing earlier');
-            html += `<div class="fb-card ${state.selected === s.uid ? 'selected' : ''}" draggable="true" data-uid="${s.uid}" data-sel="${s.uid}">
-                       <div class="fb-card-kicker">Step ${i + 1} · ${esc(tile.label)}</div>
+            if (s.service === 'if') uses = ifSummary(s);
+            const ifPos = s.branchOf ? posOf(s.branchOf) : 0;
+            const branchCls = ifPos ? ` fb-branch fb-branch-${s.branchSide === 'else' ? 'else' : 'then'}` : '';
+            const branchTag = ifPos ? `<span class="fb-branch-tag">${s.branchSide === 'else' ? 'only if step ' + ifPos + ' says no' : 'only if step ' + ifPos + ' says yes'}</span> ` : '';
+            html += `<div class="fb-card${branchCls} ${state.selected === s.uid ? 'selected' : ''}" draggable="true" data-uid="${s.uid}" data-sel="${s.uid}">
+                       <div class="fb-card-kicker">${branchTag}Step ${i + 1} · ${esc(tile.label)}</div>
                        <div class="fb-card-title">${iconFor(s.service)} ${esc(s.description || tile.label)}</div>
                        <div class="fb-card-sub">${esc(uses)}</div>
                        <button class="fb-card-del" data-del="${s.uid}" title="Remove step" aria-label="Remove step">×</button>
@@ -326,7 +413,44 @@
                   ${tile.templates.map((t) => `<option value="${esc(t)}" ${t === cur.toLowerCase() ? 'selected' : ''}>${esc(t)}</option>`).join('')}
                 </select>`;
         }
-        if (s.service === 'email') {
+        if (s.service === 'if') {
+            const c = parseIf(s.query_template);
+            const src = s.depends.length ? s.depends[0] : 0;
+            html += `<label class="fb-label">What to check</label>
+                <select id="fbIfSource" class="agent-builder-input">
+                  <option value="0" ${src === 0 ? 'selected' : ''}>What started the flow</option>
+                  ${Array.from({ length: idx }, (_, i) => i + 1).map((d) =>
+                      `<option value="${d}" ${src === d ? 'selected' : ''}>The result of step ${d}</option>`).join('')}
+                </select>
+                <label class="fb-label">Yes when</label>
+                <select id="fbIfKind" class="agent-builder-input">
+                  ${IF_KINDS.map((k) => `<option value="${k.key}" ${c.kind === k.key ? 'selected' : ''}>${esc(k.label)}</option>`).join('')}
+                </select>`;
+            if (c.kind === 'contains') {
+                html += `<label class="fb-label">Words or phrases <span class="fb-help-inline">(any one is enough, separated by commas; any case)</span></label>
+                    <input id="fbIfWords" class="agent-builder-input" value="${esc(c.words || '')}" placeholder="refund, money back">`;
+            } else if (c.kind === 'field') {
+                html += `<label class="fb-label">Field <span class="fb-help-inline">(as in the record or a database row, e.g. total_gbp or status)</span></label>
+                    <div class="fb-row fb-if-field">
+                      <input id="fbIfField" class="agent-builder-input" value="${esc(c.field || '')}" placeholder="total_gbp">
+                      <select id="fbIfOp" class="agent-builder-input">
+                        ${['=', '!=', '>', '<', '>=', '<='].map((o) => `<option ${c.op === o ? 'selected' : ''}>${o}</option>`).join('')}
+                      </select>
+                      <input id="fbIfValue" class="agent-builder-input" value="${esc(c.value || '')}" placeholder="500">
+                    </div>
+                    <p class="fb-help">Numbers compare as numbers (£ and commas are ignored); text compares in any case.</p>`;
+            } else if (c.kind === 'ask') {
+                html += `<label class="fb-label">Question <span class="fb-help-inline">(answered yes or no)</span></label>
+                    <input id="fbIfQuestion" class="agent-builder-input" value="${esc(c.question || '')}" placeholder="Is the customer asking for their money back?">
+                    <p class="fb-help">Boudica's model decides this one, so it can be wrong. Each run's report says it was a model decision. Prefer a word or field check when one will do.</p>`;
+            }
+            const later = state.steps.filter((x) => x.branchOf === s.uid);
+            html += `<p class="fb-help">Steps below this one choose under <b>Runs</b> whether they run only on yes, only on no, or always. ` +
+                    (later.length ? `Now: ${later.filter((x) => x.branchSide !== 'else').length} on yes, ${later.filter((x) => x.branchSide === 'else').length} on no.`
+                                  : 'A step you add straight below runs only on yes.') + `</p>`;
+            const prob = ifProblem(c);
+            html += `<p id="fbIfWarn" class="fb-help fb-warn ${prob ? '' : 'hidden'}">${prob ? 'To finish this check: ' + esc(prob) + '.' : ''}</p>`;
+        } else if (s.service === 'email') {
             // "Send an email" (2026-11-14): a fixed message, sent from your own
             // mailbox ("Replies sent as me" under Start) to addresses in the record.
             let f = {};
@@ -347,7 +471,19 @@
             <textarea id="fbStepQuery" class="agent-builder-input fb-query" rows="7">${esc(s.query_template)}</textarea>
             <div class="fb-chips">Insert: ${refs.map((r) => `<button type="button" class="fb-chip" data-ins="${esc(r)}">${r === '{{input}}' ? 'what started the flow' : 'step ' + r.match(/\d+/)[0] + ' result'}</button>`).join('')}</div>`;
         }
-        if (idx > 0) {
+        // Runs: always, or only on one answer of an If step above it.
+        const ifsAbove = state.steps.slice(0, idx).filter((x) => x.service === 'if');
+        if (ifsAbove.length) {
+            const cur = s.branchOf ? `${s.branchOf}:${s.branchSide}` : '';
+            html += `<label class="fb-label">Runs</label>
+                <select id="fbBranch" class="agent-builder-input">
+                  <option value="" ${cur === '' ? 'selected' : ''}>Always</option>
+                  ${ifsAbove.map((x) => { const p = posOf(x.uid); return `
+                    <option value="${x.uid}:then" ${cur === x.uid + ':then' ? 'selected' : ''}>Only if step ${p} says yes (${esc(ifSummary(x))})</option>
+                    <option value="${x.uid}:else" ${cur === x.uid + ':else' ? 'selected' : ''}>Only if step ${p} says no</option>`; }).join('')}
+                </select>`;
+        }
+        if (idx > 0 && s.service !== 'if') {
             html += `<label class="fb-label">Waits for</label><div class="fb-deps">` +
                 Array.from({ length: idx }, (_, i) => i + 1).map((d) =>
                     `<label class="fb-dep"><input type="checkbox" data-dep="${d}" ${s.depends.includes(d) ? 'checked' : ''}> step ${d}</label>`).join('') +
@@ -357,6 +493,44 @@
         el.innerHTML = html;
 
         $('fbStepDesc').addEventListener('input', (e) => { s.description = e.target.value; state.dirty = true; renderCanvas(); });
+        $('fbBranch')?.addEventListener('change', (e) => {
+            const [u, side] = e.target.value.split(':');
+            s.branchOf = Number(u) || 0;
+            s.branchSide = s.branchOf ? side : '';
+            // A step never waits for one on the other side of the same check:
+            // that step does not run when this one does.
+            if (s.branchOf) s.depends = s.depends.filter((d) => {
+                const o = state.steps[d - 1];
+                return !(o && o.branchOf === s.branchOf && o.branchSide !== s.branchSide);
+            });
+            state.dirty = true;
+            renderAll();
+        });
+        if (s.service === 'if') {
+            const cond = () => parseIf(s.query_template);
+            const setCond = (c, rerender) => {
+                s.query_template = ifText(c);
+                state.dirty = true;
+                renderCanvas();
+                if (rerender) return renderInspector();
+                const w = $('fbIfWarn'), prob = ifProblem(c);
+                if (w) { w.textContent = prob ? `To finish this check: ${prob}.` : ''; w.classList.toggle('hidden', !prob); }
+            };
+            $('fbIfSource').addEventListener('change', (e) => {
+                const d = Number(e.target.value);
+                s.depends = d > 0 ? [d] : [];
+                state.dirty = true;
+                renderCanvas();
+            });
+            $('fbIfKind').addEventListener('change', (e) => {
+                const k = e.target.value;
+                setCond(k === 'field' ? { kind: k, field: '', op: '=', value: '' } : { kind: k }, true);
+            });
+            $('fbIfWords')?.addEventListener('input', (e) => setCond({ kind: 'contains', words: e.target.value }));
+            const fieldInput = () => setCond({ kind: 'field', field: $('fbIfField').value, op: $('fbIfOp').value, value: $('fbIfValue').value });
+            ['fbIfField', 'fbIfOp', 'fbIfValue'].forEach((id) => { $(id)?.addEventListener('input', fieldInput); $(id)?.addEventListener('change', fieldInput); });
+            $('fbIfQuestion')?.addEventListener('input', (e) => setCond({ kind: 'ask', question: e.target.value }));
+        }
         $('fbStepQuery')?.addEventListener('input', (e) => { s.query_template = e.target.value; state.dirty = true; });
         if (s.service === 'email') {
             const save = () => {
@@ -744,7 +918,17 @@
             state.steps = a.steps.map((s) => ({
                 uid: uidCounter++, service: s.service, description: s.description, query_template: s.query_template,
                 depends: String(s.depends_on || '').split(',').map((x) => parseInt(x, 10)).filter((n) => n > 0 && n < s.step_index),
+                branchOf: 0, branchSide: '',
             }));
+            // Saved "N:then" / "N:else" -> the If step's uid.
+            a.steps.forEach((s, i) => {
+                const m = /^(\d+):(then|else)$/.exec(s.branch || '');
+                const owner = m ? state.steps[Number(m[1]) - 1] : null;
+                if (owner && Number(m[1]) <= i && owner.service === 'if') {
+                    state.steps[i].branchOf = owner.uid;
+                    state.steps[i].branchSide = m[2];
+                }
+            });
             try {
                 const t = await Api().flows('triggers/list', { agent_name: a.agent_name });
                 const tr = (t.triggers || [])[0];
@@ -798,6 +982,7 @@
         state.steps = (d.steps || []).map((s) => ({
             uid: uidCounter++, service: s.service, description: s.description || '',
             query_template: s.query_template || '', depends: (s.depends || []).filter((n) => n > 0),
+            branchOf: 0, branchSide: '',
         }));
         const t = d.trigger || {};
         state.trigger = { ...state.trigger, trigger_id: 0, kind: t.kind || 'manual',
@@ -987,12 +1172,23 @@
             return showError('Choose the database and lookup that says which records changed (under Start).');
         if (t.kind === 'schedule' && !(t.every_minutes >= 2) && !/^([01]\d|2[0-3]):[0-5]\d$/.test(t.at_time))
             return showError('Give a repeat of 2 minutes or more, or a daily time as HH:MM.');
+        cleanBranches();
+        for (let i = 0; i < state.steps.length; i++) {
+            const st = state.steps[i];
+            if (st.service !== 'if') continue;
+            const prob = ifProblem(parseIf(st.query_template));
+            if (prob) return showError(`Step ${i + 1} (If): ${prob}.`);
+            if (!state.steps.some((x) => x.branchOf === st.uid))
+                return showError(`Step ${i + 1} (If) decides nothing yet: choose under "Runs" which steps below it run only on yes or only on no.`);
+        }
         const steps = state.steps.map((s, i) => ({
             step_index: i + 1,
             description: s.description || tileFor(s.service).label,
             service: s.service,
             query_template: s.query_template,
-            depends_on: s.depends.filter((d) => d <= i).join(','),
+            depends_on: s.service === 'if' ? (s.depends.length ? String(s.depends[0]) : '')
+                                           : s.depends.filter((d) => d <= i).join(','),
+            branch: s.branchOf ? `${posOf(s.branchOf)}:${s.branchSide === 'else' ? 'else' : 'then'}` : '',
         }));
         const btn = $('flowSaveBtn');
         btn.disabled = true;
@@ -1087,6 +1283,11 @@
         $('flowName').value = a.agent_name;
         $('flowDisplayName').value = a.display_name;
         $('flowDescription').value = a.description;
+        // Typing goes straight into the state: every change to the steps
+        // redraws this header, which wiped a name typed before the first save.
+        $('flowName').oninput = (e) => { a.agent_name = e.target.value.trim().toLowerCase(); state.dirty = true; };
+        $('flowDisplayName').oninput = (e) => { a.display_name = e.target.value; state.dirty = true; };
+        $('flowDescription').oninput = (e) => { a.description = e.target.value; state.dirty = true; };
         $('flowName').disabled = !!(a.agent_id && a.editable);
         // Only your own saved flow can be deleted (a shared one is not yours).
         $('flowDeleteBtn')?.classList.toggle('hidden', !(a.agent_id && a.editable && !state.copyOf));

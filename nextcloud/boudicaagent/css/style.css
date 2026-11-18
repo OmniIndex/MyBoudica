@@ -542,3 +542,14 @@ body.fb-dragging .fb-drop { min-height: 40px; border: 2px dashed var(--border-co
 /* Delete flow (Agents 0.2.7) */
 .fb-delete { color: #b91c1c; border-color: #fca5a5; }
 .fb-delete:hover { background: #fef2f2; }
+
+/* If step (2026-11-18): steps in a branch sit indented under their check. */
+.fb-card.fb-branch { margin-left: 28px; border-left-width: 4px; }
+.fb-card.fb-branch-then { border-left-color: #2E9E6B; }
+.fb-card.fb-branch-else { border-left-color: #9AA3B2; }
+.fb-branch-tag { display: inline-block; font-size: 10px; font-weight: 600; padding: 0 6px; border-radius: 8px;
+                 background: var(--bg-secondary, #eef1f5); color: var(--text-secondary, #4b5563); margin-right: 4px; }
+.fb-branch-then .fb-branch-tag { background: #E3F4EB; color: #1E6B48; }
+.fb-if-field { display: flex; gap: 6px; }
+.fb-if-field select { width: 80px; flex: none; }
+.fb-warn { color: #B45309; }
