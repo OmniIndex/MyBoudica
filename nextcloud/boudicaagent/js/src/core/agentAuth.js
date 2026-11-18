@@ -17,7 +17,47 @@
     // See the matching comment in agentApi.js - same window.BOUDICA_API_BASE
     // override, kept independent here since this file loads before it and
     // the two don't share module scope.
-    const SIGNUP_URL = (global.BOUDICA_API_BASE || 'https://boudi.ca/api/boudica') + '/beta/signup';
+    const API_BASE = global.BOUDICA_API_BASE || 'https://boudi.ca/api/boudica';
+    const SIGNUP_URL = API_BASE + '/beta/signup';
+
+    // A key an admin switched off (e.g. after it leaked, 2026-11-18) stays
+    // in localStorage and the Nextcloud copy until something replaces it, so
+    // the session is checked once per page with a cheap signed-in call: a
+    // refused key gets 401/403. Network trouble counts as "fine" - never
+    // throw a key away because the server could not be reached.
+    async function keyIsRefused(token) {
+        try {
+            const res = await fetch(API_BASE + '/speech/info', {
+                method: 'GET',
+                headers: { Authorization: 'Bearer ' + token },
+                credentials: 'omit',
+            });
+            return res.status === 401 || res.status === 403;
+        } catch (err) {
+            return false;
+        }
+    }
+
+    // Asks Nextcloud (Boudica AI's /api/key/renew) for this user's key. It
+    // checks the key it holds with Boudica and mints a new one when Boudica
+    // refuses it, so the Nextcloud copy is fixed too. null if that route is
+    // missing (older Boudica AI) or fails.
+    async function renewFromNextcloud() {
+        if (!global.OC || typeof OC.generateUrl !== 'function') return null;
+        try {
+            const res = await fetch(OC.generateUrl('/apps/boudicaai/api/key/renew'), {
+                method: 'POST',
+                headers: { requesttoken: OC.requestToken || '', 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: '{}',
+            });
+            if (!res.ok) return null;
+            const data = await res.json();
+            return data && data.success && data.token ? { token: data.token, email: data.email } : null;
+        } catch (err) {
+            return null;
+        }
+    }
 
     function readSession() {
         try {
@@ -76,7 +116,16 @@
         if (!BoudicaCode._agentSessionPromise) {
             BoudicaCode._agentSessionPromise = (async () => {
                 const existing = readSession();
-                if (existing) return existing;
+                if (existing && !(await keyIsRefused(existing.token))) return existing;
+                if (existing) {
+                    console.warn('[BoudicaAgent] Boudica refused the stored key - getting a new one');
+                    localStorage.removeItem('boudica_session');
+                    const renewed = await renewFromNextcloud();
+                    if (renewed && renewed.token !== existing.token) {
+                        localStorage.setItem('boudica_session', JSON.stringify(renewed));
+                        return renewed;
+                    }
+                }
 
                 const ncUser = global.OC && OC.getCurrentUser && OC.getCurrentUser();
                 if (!ncUser) {

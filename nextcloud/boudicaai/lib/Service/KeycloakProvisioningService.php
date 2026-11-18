@@ -37,6 +37,9 @@ class KeycloakProvisioningService {
     // on purpose: this is a fixed container-to-container hop, not something
     // that varies per install the way the public-facing endpoint does.
     private const BETA_SIGNUP_URL = 'http://web:80/api/boudica/beta/signup';
+    // Any signed-in engine call that is cheap and changes nothing: a
+    // refused key gets 403 here like everywhere else.
+    private const KEY_CHECK_URL = 'http://web:80/api/boudica/speech/info';
 
     private Client $httpClient;
 
@@ -91,5 +94,55 @@ class KeycloakProvisioningService {
         $this->config->setUserValue($uid, 'boudicaai', 'boudica_email', $uid);
 
         return $apiKey;
+    }
+
+    /**
+     * Does Boudica still accept this key? Asks the engine with a cheap
+     * signed-in call (/speech/info). true = accepted, false = refused
+     * (401/403: the key was switched off), null = could not tell (engine
+     * down, timeout) - callers must not throw a key away on null.
+     */
+    public function isKeyAccepted(string $apiKey): ?bool {
+        if ($apiKey === '') {
+            return false;
+        }
+        try {
+            $response = $this->httpClient->get(self::KEY_CHECK_URL, [
+                'headers' => ['Authorization' => 'Bearer ' . $apiKey],
+                'http_errors' => false,
+                'timeout' => 5,
+            ]);
+        } catch (\Throwable $e) {
+            return null;
+        }
+        $status = $response->getStatusCode();
+        if ($status === 401 || $status === 403) {
+            return false;
+        }
+        return $status >= 200 && $status < 300 ? true : null;
+    }
+
+    /**
+     * Gives this user a working key: keeps the one on file while Boudica
+     * accepts it, and mints a new one when Boudica refuses it (an admin
+     * switched it off, e.g. after a key leaked, 2026-11-18). The apps call
+     * this through KeyController when a request is refused, so nobody has
+     * to clear their browser or sign in again.
+     *
+     * @return string|null the key now on file, or null if none could be had
+     */
+    public function renewIfRefused(string $uid, string $name): ?string {
+        $existing = $this->config->getUserValue($uid, 'boudicaai', 'boudica_api_key', '');
+        if ($existing !== '' && $this->isKeyAccepted($existing) !== false) {
+            return $existing;
+        }
+        if ($existing !== '') {
+            $this->logger->info('Boudica refused the stored API key - getting a new one', [
+                'app' => 'boudicaai',
+                'uid' => $uid,
+            ]);
+            $this->config->deleteUserValue($uid, 'boudicaai', 'boudica_api_key');
+        }
+        return $this->ensureApiKey($uid, $name);
     }
 }

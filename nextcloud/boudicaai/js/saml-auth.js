@@ -121,6 +121,19 @@ class SAMLAuthenticator {
                 }
             }
 
+            // A key an admin switched off (e.g. after it leaked, 2026-11-18)
+            // would otherwise sit here for good: the PHP pre-seed puts the
+            // same Nextcloud copy back every time. Check it once per page
+            // and, if Boudica refuses it, let Nextcloud replace it.
+            if (await this._keyIsRefused(session.token)) {
+                console.warn('[SAMLAuth] Boudica refused the stored key - getting a new one');
+                const renewed = await this._renewFromNextcloud();
+                if (renewed && renewed.token !== session.token && (!currentUid || renewed.email === currentUid)) {
+                    session = { token: renewed.token };
+                    email = renewed.email;
+                }
+            }
+
             console.log('Found existing session for user:', email);
             const normalized = {
                 token: session.token,
@@ -140,6 +153,47 @@ class SAMLAuthenticator {
             localStorage.removeItem('boudica_session');
         }
         return null;
+    }
+
+    /**
+     * true when Boudica answers 401/403 to this key on a cheap signed-in
+     * call. Network trouble counts as false - never drop a key because the
+     * server could not be reached.
+     */
+    async _keyIsRefused(token) {
+        const apiBase = localStorage.getItem('boudica_api_url') || '/api/boudica';
+        try {
+            const res = await fetch(apiBase + '/speech/info', {
+                method: 'GET',
+                headers: { Authorization: 'Bearer ' + token },
+                credentials: 'omit',
+            });
+            return res.status === 401 || res.status === 403;
+        } catch (err) {
+            return false;
+        }
+    }
+
+    /**
+     * Asks this app's /api/key/renew (KeyController) for the user's key:
+     * Nextcloud checks the key it holds with Boudica and stores a new one
+     * when it is refused. Returns { token, email } or null.
+     */
+    async _renewFromNextcloud() {
+        if (!window.OC || typeof OC.generateUrl !== 'function') return null;
+        try {
+            const res = await fetch(OC.generateUrl('/apps/boudicaai/api/key/renew'), {
+                method: 'POST',
+                headers: { requesttoken: OC.requestToken || '', 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: '{}',
+            });
+            if (!res.ok) return null;
+            const data = await res.json();
+            return data && data.success && data.token ? { token: data.token, email: data.email } : null;
+        } catch (err) {
+            return null;
+        }
     }
 
     /**

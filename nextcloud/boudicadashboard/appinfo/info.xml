@@ -10,7 +10,7 @@ metrics as the Boudica Admin Portal (overall usage, most-prompted
 questions, security-risk flags, a 30-day usage timeline, and top
 users by volume) directly inside Nextcloud, backed by Chart.js.
     ]]></description>
-    <version>0.1.0</version>
+    <version>0.1.1</version>
     <licence>agpl</licence>
     <author>You</author>
     <namespace>BoudicaDashboard</namespace>
