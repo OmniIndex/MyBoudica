@@ -11,11 +11,9 @@
  * cross-origin from Nextcloud. This instead follows the confirmed
  * convention from the dashboard app: api_key + user_id sent
  * explicitly with every call.
- *   - list() is a GET in the original, so api_key/user_id go as
- *     query params here (ASSUMPTION — not yet confirmed against the
- *     real backend; the original only ever sent user_id as a query
- *     param over a cookie session, so whether /agents/list even reads
- *     an api_key query param needs verifying).
+ *   - list() is a GET: user_id goes as a query param, the key as
+ *     "Authorization: Bearer" (never in the URL — query strings end
+ *     up in the access log).
  *   - save()/deleteAgent() are POSTs with a JSON body in the
  *     original, so api_key is just added into that same body
  *     (matches the confirmed dashboard convention exactly).
@@ -100,9 +98,12 @@
 
     async function listAgents() {
         const { apiKey, userId } = await resolveCredentials();
-        const params = new URLSearchParams({ user_id: userId, api_key: apiKey });
+        // The key goes in the Authorization header, never the URL: a query
+        // string is written to the server's access log (2026-11-18).
+        const params = new URLSearchParams({ user_id: userId });
         const url = `${apiBase()}/agents/list?${params.toString()}`;
-        const res = await wrapEndpointFetch(url, { method: 'GET', credentials: 'omit' });
+        const headers = apiKey ? { Authorization: 'Bearer ' + apiKey } : {};
+        const res = await wrapEndpointFetch(url, { method: 'GET', credentials: 'omit', headers });
         return jsonOrThrow(res, 'agents/list');
     }
 
