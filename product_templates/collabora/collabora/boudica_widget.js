@@ -1150,8 +1150,8 @@
                     // create-a-document pattern): show it as a preview instead.
                     const isImageAnswer = !!(extractGeneratedImage(responseText) || extractSvg(responseText));
                     if (shouldUpdateDocument && !isImageAnswer) {
-                        commitDocumentContent(responseText);
-                        updateStreamingBubble(assistantBubble, documentWrittenMessage(responseText));
+                        const figuresNote = await writeDocumentWithFigures(responseText, message, (t) => updateStreamingBubble(assistantBubble, t));
+                        updateStreamingBubble(assistantBubble, documentWrittenMessage(responseText) + (figuresNote ? '\n\n' + figuresNote : ''));
                     } else if (shouldUpdateDocument) {
                         updateStreamingBubble(assistantBubble, responseText);   // replace the "Composing document\u2026" text
                     }
@@ -1264,8 +1264,8 @@
                         updateStreamingBubble(assistantBubble, responseText);   // replace the "Composing document\u2026" text
                         decorateResponse(assistantBubble, responseText);
                     } else {
-                        commitDocumentContent(responseText);
-                        updateStreamingBubble(assistantBubble, documentWrittenMessage(responseText));
+                        const figuresNote = await writeDocumentWithFigures(responseText, message, (t) => updateStreamingBubble(assistantBubble, t));
+                        updateStreamingBubble(assistantBubble, documentWrittenMessage(responseText) + (figuresNote ? '\n\n' + figuresNote : ''));
                         decorateResponse(assistantBubble, responseText, { committed: true });
                     }
                     clearQueuedFiles();
@@ -2204,13 +2204,169 @@
         return msg;
     }
 
-    function commitDocumentContent(text) {
+    function commitDocumentContent(text, figures = []) {
         if (!text || !text.trim()) {
             console.warn('[Boudica] Skipped final document write -- cleaned response was empty. Nothing was changed in the editor.');
             return;
         }
+        let html = renderMarkdown(figures.length ? placeFigureTokens(text, figures) : text);
+        if (figures.length) {
+            html = html.replace(/(?:<p>)?BOUDICAFIGURE(\d+)(?:<\/p>|<br>)?/g, (m, n) => figureHtml(figures[Number(n)]) || '');
+        }
         app.socket.sendMessage("uno .uno:SelectAll");
-        insertTextAtCursor(renderMarkdown(text));
+        insertTextAtCursor(html);
+    }
+
+    // ---- Figures (2026-11-18) -------------------------------------------------
+    // A document Boudica writes in Writer gets charts and flow diagrams where
+    // the text gives the numbers or the steps, and FLUX pictures when the
+    // request asks for them. The server's /figures job plans them (rule pack
+    // figure_planner), checks every chart number against the text and draws
+    // the SVG (boudica_figures_build.py). They go into the ONE document write
+    // (commitDocumentContent) as images at the end of their sections; tested:
+    // the markdown paste keeps <img src="data:..."> as real pictures, and a
+    // .docx save keeps SVG with a PNG copy. No figures (none fit, an error,
+    // Stop) = the text alone, exactly as before.
+    const FIGURE_WIDTH_PX = 576;   // 6 in at 96 dpi: fits an A4 or Letter text column
+
+    function figuresWanted(text) {
+        return config.figures !== false && currentDocType() === 'text' &&
+               (/^\s{0,3}#{1,6}\s+\S/m.test(text || '') || BOLD_HEADING_RE.test(text || ''));
+    }
+
+    // The model often writes section titles as a line that is all bold
+    // ("**Visitor Growth**") instead of "## Visitor Growth": those are
+    // headings too (lowest level), or such a document never got figures.
+    const BOLD_HEADING_RE = /^\s*\*\*([^*\n]{2,100}?)\*\*:?\s*$/m;
+
+    function wantsPictures(message) {
+        return /\billustrat(ed|e|ions?)\b/i.test(message || '') ||
+               /\b(with|add|include|including|plus|and)\s+(some\s+|a\s+few\s+|nice\s+)?(pictures?|images?|photos?|artwork)\b/i.test(message || '');
+    }
+
+    function normHeading(s) {
+        return String(s || '').replace(/[*_`]/g, '').trim().toLowerCase()
+            .replace(/^\d+(\.\d+)*\.?\s+/, '').replace(/[^\p{L}\p{N}_]+/gu, ' ').trim();
+    }
+
+    // Puts BOUDICAFIGUREn on its own line at the end of each figure's section
+    // (before the next heading of the same or a higher level).
+    function placeFigureTokens(markdown, figures) {
+        const lines = markdown.split('\n');
+        const heads = [];
+        lines.forEach((l, i) => {
+            const m = /^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/.exec(l);
+            if (m) { heads.push({ i, level: m[1].length, key: normHeading(m[2]) }); return; }
+            const b = new RegExp(BOLD_HEADING_RE.source).exec(l);
+            if (b) heads.push({ i, level: 7, key: normHeading(b[1]) });
+        });
+        const inserts = [];
+        figures.forEach((f, n) => {
+            const h = heads.find(x => x.key === normHeading(f.section));
+            if (!h) return;
+            const next = heads.find(x => x.i > h.i && x.level <= h.level);
+            let at = next ? next.i : lines.length;
+            // Straight after the section's list when it has one: the list holds
+            // the numbers or steps the figure shows, and the last section
+            // otherwise ran on into the document's closing words.
+            for (let k = at - 1; k > h.i; k--) {
+                if (/^\s*([-*]|\d+\.)\s+\S/.test(lines[k])) { at = k + 1; break; }
+            }
+            while (at > h.i + 1 && !lines[at - 1].trim()) at--;
+            inserts.push({ at, n });
+        });
+        inserts.sort((a, b) => b.at - a.at || b.n - a.n);
+        for (const { at, n } of inserts) {
+            const blankAfter = at < lines.length && !lines[at].trim();
+            lines.splice(at, 0, ...(blankAfter ? ['', 'BOUDICAFIGURE' + n] : ['', 'BOUDICAFIGURE' + n, '']));
+        }
+        return lines.join('\n');
+    }
+
+    function utf8ToBase64(s) {
+        const bytes = new TextEncoder().encode(s);
+        let bin = '';
+        for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+        return btoa(bin);
+    }
+
+    function escapeAttr(s) {
+        return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function figureHtml(f) {
+        if (!f) return '';
+        const alt = escapeAttr(f.title || (f.kind === 'picture' ? 'Illustration' : 'Figure'));
+        if (f.svg) {
+            const m = /<svg[^>]*\swidth="([\d.]+)"[^>]*\sheight="([\d.]+)"/.exec(f.svg);
+            const w0 = m ? Number(m[1]) : 720, h0 = m ? Number(m[2]) : 400;
+            const h = Math.round(h0 * FIGURE_WIDTH_PX / w0);
+            return `<p><img src="data:image/svg+xml;base64,${utf8ToBase64(f.svg)}" alt="${alt}" width="${FIGURE_WIDTH_PX}" height="${h}"></p>`;
+        }
+        if (f.png_base64) {
+            // The PNG is passed on byte for byte: FLUX's AI-generated marking
+            // (EU AI Act Art. 50) is inside it; re-encoding would drop it.
+            const h = Math.round(FIGURE_WIDTH_PX * 576 / 1024);
+            return `<p><img src="data:image/png;base64,${f.png_base64}" alt="${alt}" width="${FIGURE_WIDTH_PX}" height="${h}"></p>` +
+                   `<p><em>AI-generated illustration: ${alt}</em></p>`;
+        }
+        return '';
+    }
+
+    async function startFiguresJob(text, pictures) {
+        if (!apiKey) getApiKey();
+        const r = await fetch(apiBase() + '/figures', {
+            method: 'POST',
+            headers: Object.assign({ 'Content-Type': 'application/json' },
+                                   apiKey ? { 'Authorization': 'Bearer ' + apiKey } : {}),
+            body: JSON.stringify({ text, pictures, request_id: newRequestId(), user_id: userId, api_key: apiKey })
+        });
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok || !body.job_id) throw new Error(body.error || `Could not start the figures (HTTP ${r.status})`);
+        return body.job_id;
+    }
+
+    async function fetchFigures(jobId) {
+        const r = await fetch(`${apiBase()}/figures_file?job_id=${encodeURIComponent(jobId)}`, {
+            headers: apiKey ? { 'Authorization': 'Bearer ' + apiKey } : {},
+            cache: 'no-store'
+        });
+        if (!r.ok) throw new Error('The figures could not be fetched');
+        const body = await r.json();
+        return Array.isArray(body.figures) ? body.figures : [];
+    }
+
+    /**
+     * Writes a finished document answer, with its figures when any fit.
+     * Returns a line for the chat bubble about the figures ('' for none).
+     */
+    // showStatus: the caller's way to update its chat bubble. updateStreamingBubble
+    // lives inside initWidget(), out of reach of this module-level function
+    // (calling it here threw and silently dropped every figure, 2026-11-18).
+    async function writeDocumentWithFigures(text, message, showStatus) {
+        const truncated = lastAnswerTruncated;   // following the job resets it
+        let figures = [];
+        let note = '';
+        const pictures = wantsPictures(message);
+        if (figuresWanted(text)) {
+            try {
+                showStatus(pictures
+                    ? '*Planning charts, diagrams and pictures for your document…*'
+                    : '*Looking for places where a chart or diagram would help…*');
+                const jobId = await startFiguresJob(text, pictures);
+                await callBoudicaAPI('', (partial) => {
+                    note = partial;
+                    showStatus(partial);
+                }, null, jobId);
+                figures = await fetchFigures(jobId);
+            } catch (e) {
+                console.warn('[Boudica] Writing the document without figures:', e);
+                note = pictures ? 'The pictures could not be made, so the document has text only.' : '';
+            }
+        }
+        lastAnswerTruncated = truncated;
+        commitDocumentContent(text, figures);
+        return (figures.length || pictures) ? (note || '').trim() : '';
     }
 
     function findInDocument(searchTerm) {
@@ -2769,16 +2925,18 @@
          // Blockquotes
         html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
 
-        // Unordered lists
-        html = html.replace(/^[\-\*] (.+)$/gm, '<li>$1</li>');
-        html = html.replace(/((<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
+        // Unordered lists. Their items are <uli> until the ordered lists are
+        // done: as <li> the ordered-list step below also wrapped them, so
+        // every bullet list reached the document numbered (found 2026-11-18).
+        html = html.replace(/^[\-\*] (.+)$/gm, '<uli>$1</uli>');
+        html = html.replace(/((<uli>.*<\/uli>\n?)+)/g, '<ul>$1</ul>');
 
         // Ordered lists
         html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
         html = html.replace(/((<li>.*<\/li>\n?)+)/g, function(match) {
-            if (match.includes('<ul>')) return match;
             return '<ol style="list-style-type: decimal; left: 6px;">' + match + '</ol>';
         });
+        html = html.replace(/<(\/?)uli>/g, '<$1li>');
 
         // A generated image (markdown image with a /generated/ URL). NOT rendered
         // as <img>: fetching that URL would start the server's delete-after-first-
