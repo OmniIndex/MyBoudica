@@ -2913,6 +2913,25 @@
     // (lines and spaces) but not their HTML forms; so for the paste they stay
     // markdown. The chat bubble (innerHTML) gets HTML.
     function renderMarkdown(text, forPaste = false) {
+        if (forPaste) {
+            // Tables and fenced code blocks stay markdown; each piece of text
+            // between them becomes HTML on its own, so no HTML element is left
+            // open around a block (an open <p> made the importer join the
+            // next heading's text into it - paste check, 2026-11-19).
+            const blocks = [];
+            const keep = (m) => '\n\nBOUDICAKEEP' + (blocks.push(m.replace(/^\n+|\s+$/g, '')) - 1) + '\n\n';
+            let t = text.replace(/```[^\n]*\n[\s\S]*?```/g, keep);
+            t = t.replace(/^\|.*\|[ \t]*\n\|?[ \t]*:?-{2,}:?[ \t]*(?:\|[ \t]*:?-{2,}:?[ \t]*)*\|?[ \t]*\n(?:\|.*\|[ \t]*(?:\n|$))*/gm, keep);
+            return t.split(/\n\nBOUDICAKEEP(\d+)\n\n/)
+                .map((seg, i) => {
+                    if (i % 2) return blocks[Number(seg)];
+                    if (!seg.trim()) return '';
+                    const h = renderMarkdown(seg.trim(), false);
+                    const open = (h.match(/<p>/g) || []).length - (h.match(/<\/p>/g) || []).length;
+                    return h + '</p>'.repeat(Math.max(0, open));
+                })
+                .filter(x => x).join('\n\n');
+        }
         // HTML-escape first to prevent XSS
         let html = text
             .replace(/&/g, '&amp;')
@@ -2923,8 +2942,7 @@
         // them, so a block's lines were split into paragraphs and lost.
         const preBlocks = [];
         html = html.replace(/```[^\n]*\n([\s\S]*?)```/g, function(m, code) {
-            const body = code.replace(/\s+$/, '');
-            preBlocks.push(forPaste ? '\n\n```\n' + body + '\n```\n\n' : '<pre>' + body + '</pre>');
+            preBlocks.push('<pre>' + code.replace(/\s+$/, '') + '</pre>');
             return '\n\nBOUDICAPRE' + (preBlocks.length - 1) + '\n\n';
         });
         // Inline code
@@ -2947,7 +2965,6 @@
         // a real table; they used to reach the document as lines of text.
         html = html.replace(/^(\|.*\|)[ \t]*\n\|?[ \t]*:?-{2,}:?[ \t]*(?:\|[ \t]*:?-{2,}:?[ \t]*)*\|?[ \t]*\n((?:\|.*\|[ \t]*(?:\n|$))*)/gm,
             function(m, head, body) {
-                if (forPaste) return '\n\nBOUDICATABLE' + (preBlocks.push('\n\n' + m.replace(/\s+$/, '') + '\n\n') - 1) + '\n\n';
                 const cells = (row) => row.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
                 const th = cells(head).map(c => '<th>' + c + '</th>').join('');
                 const rows = body.split('\n').filter(r => r.trim()).map(r =>
@@ -2994,14 +3011,19 @@
         html = html.replace(/(<\/pre>)<\/p>/g, '$1');
         html = html.replace(/<p>(<ul>)/g, '$1');
         html = html.replace(/(<\/ul>)<\/p>/g, '$1');
-        html = html.replace(/<p>(<ol>)/g, '$1');
+        html = html.replace(/<p>(<ol[^>]*>)/g, '$1');
         html = html.replace(/(<\/ol>)<\/p>/g, '$1');
         html = html.replace(/<p>(<blockquote>)/g, '$1');
         html = html.replace(/(<\/blockquote>)<\/p>/g, '$1');
         html = html.replace(/<p><hr><\/p>/g, '<hr>');
         html = html.replace(/<p><hr>/g, '<hr><p>');
         html = html.replace(/<p>(<table[\s\S]*?<\/table>)<\/p>/g, '$1');
-        html = html.replace(/(?:<p>)?BOUDICA(?:PRE|TABLE)(\d+)(?:<\/p>)?/g, (m, n) => preBlocks[Number(n)] || '');
+        // A line break next to a block ("</li><br>", "</ul><br><h2>") is noise, and
+        // in a document paste it made the importer join a heading to the block
+        // after it (paste check, 2026-11-19).
+        html = html.replace(/(<\/(?:ul|ol|li|h[1-6]|table|pre|blockquote|p)>|<hr>)<br>/g, '$1');
+        html = html.replace(/<br>(?=<\/?(?:ul|ol|li|h[1-6]|table|pre|blockquote|hr)\b)/g, '');
+        html = html.replace(/(?:<p>)?BOUDICAPRE(\d+)(?:<\/p>)?/g, (m, n) => preBlocks[Number(n)] || '');
 
         return html;
     }  //end renderMarkdown      
