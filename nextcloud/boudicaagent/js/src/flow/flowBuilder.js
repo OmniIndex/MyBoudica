@@ -984,6 +984,15 @@
             query_template: s.query_template || '', depends: (s.depends || []).filter((n) => n > 0),
             branchOf: 0, branchSide: '',
         }));
+        // If steps (2026-11-19): a drafted "N:then" / "N:else" -> the If step's uid, as in openFlow.
+        (d.steps || []).forEach((s, i) => {
+            const m = /^(\d+):(then|else)$/.exec(s.branch || '');
+            const owner = m ? state.steps[Number(m[1]) - 1] : null;
+            if (owner && Number(m[1]) <= i && owner.service === 'if') {
+                state.steps[i].branchOf = owner.uid;
+                state.steps[i].branchSide = m[2];
+            }
+        });
         const t = d.trigger || {};
         state.trigger = { ...state.trigger, trigger_id: 0, kind: t.kind || 'manual',
                           every_minutes: t.every_minutes == null ? 5 : t.every_minutes, at_time: t.at_time || '08:00',
@@ -1016,8 +1025,9 @@
         state.routesLoaded = true;
         state.routesDirty = true;
         state.dirty = true;
-        state.selected = state.steps.some((s) => s.service === 'notify')
-            ? state.steps[state.steps.length - 1].uid : 'start';
+        // Who gets told is set on a "Tell a colleague" step (with If steps it may not be the last one).
+        const lastNotify = state.steps.filter((s) => s.service === 'notify').pop();
+        state.selected = lastNotify ? lastNotify.uid : 'start';
         renderAll();
         showDraftInfo({ questions: d.questions || [], notes, unmatched });
     }
