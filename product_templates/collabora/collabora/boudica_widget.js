@@ -1129,7 +1129,7 @@
 
                     let responseText = '';
                     await callBoudicaAPI(
-                        message || 'Please analyze the provided files.',
+                        shouldUpdateDocument ? documentRequest(message) : (message || 'Please analyze the provided files.'),
                         (partialText) => {
                             responseText = partialText;
                             updateStreamingBubble(assistantBubble, partialText, shouldUpdateDocument);
@@ -1240,7 +1240,7 @@
                 const createRegex = /\b(create|compose|write)\s+?.*?(document|spreadsheet|presentation|whitepaper|post)\b/gi;
                 if ( createRegex.test(message) ) {
                     let responseText = '';
-                    await callBoudicaAPI(message, (partialText) => {
+                    await callBoudicaAPI(documentRequest(message), (partialText) => {
                         responseText = partialText; 
                         updateStreamingBubble(assistantBubble, partialText, true);
                     }, queuedFiles.length > 0 ? queuedFiles : null);
@@ -2194,6 +2194,18 @@
     // Replaces the "Composing document… (N characters so far)" bubble once the
     // answer is in the document: that text used to stay, so a finished request
     // looked stuck (2026-10-10).
+    // A request that writes the document gets this note (2026-11-19): asked
+    // for "diagrams and flow charts", the 27B drew boxes out of text
+    // characters in code blocks, which reached the document as rows of
+    // dashes. Steps and tables written plainly become real figures (the
+    // /figures job) and real tables (renderMarkdown).
+    const DOCUMENT_FORMAT_NOTE = '\n\n[For this document: write each diagram or flow chart as a numbered list of steps under ' +
+        'its own heading, and each table as a markdown table. Never draw diagrams, charts or boxes with text characters, ' +
+        'and never put them in code blocks: Boudica draws the charts and diagrams from those steps and numbers.]';
+    function documentRequest(message) {
+        return message + DOCUMENT_FORMAT_NOTE;
+    }
+
     function documentWrittenMessage(text) {
         const chars = (text || '').length.toLocaleString();
         let msg = `\u2713 Done \u2013 written into your document (${chars} characters).`;
@@ -2209,7 +2221,7 @@
             console.warn('[Boudica] Skipped final document write -- cleaned response was empty. Nothing was changed in the editor.');
             return;
         }
-        let html = renderMarkdown(figures.length ? placeFigureTokens(text, figures) : text);
+        let html = renderMarkdown(figures.length ? placeFigureTokens(text, figures) : text, true);
         if (figures.length) {
             html = html.replace(/(?:<p>)?BOUDICAFIGURE(\d+)(?:<\/p>|<br>)?/g, (m, n) => figureHtml(figures[Number(n)]) || '');
         }
@@ -2896,15 +2908,24 @@
     }        
 
     // Simple Markdown to HTML renderer with XSS protection
-    function renderMarkdown(text) {
+    // forPaste (2026-11-19): the document paste goes through Collabora's
+    // markdown import, which keeps a markdown table and a fenced code block
+    // (lines and spaces) but not their HTML forms; so for the paste they stay
+    // markdown. The chat bubble (innerHTML) gets HTML.
+    function renderMarkdown(text, forPaste = false) {
         // HTML-escape first to prevent XSS
         let html = text
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;');
-        // Code blocks (``` ... ```)
-        html = html.replace(/```(\w*)\n([\s\S]*?)```/g, function(m, lang, code) {
-            return '<pre><code>' + code.trim() + '</code></pre>';
+        // Code blocks (``` ... ```). Kept aside until the end (2026-11-19): the
+        // heading/list/bold and line-break steps below used to run inside
+        // them, so a block's lines were split into paragraphs and lost.
+        const preBlocks = [];
+        html = html.replace(/```[^\n]*\n([\s\S]*?)```/g, function(m, code) {
+            const body = code.replace(/\s+$/, '');
+            preBlocks.push(forPaste ? '\n\n```\n' + body + '\n```\n\n' : '<pre>' + body + '</pre>');
+            return '\n\nBOUDICAPRE' + (preBlocks.length - 1) + '\n\n';
         });
         // Inline code
         html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
@@ -2922,6 +2943,19 @@
         html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
         html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
         html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+        // Tables (2026-11-19): "| a | b |" rows under a "|---|---|" line become
+        // a real table; they used to reach the document as lines of text.
+        html = html.replace(/^(\|.*\|)[ \t]*\n\|?[ \t]*:?-{2,}:?[ \t]*(?:\|[ \t]*:?-{2,}:?[ \t]*)*\|?[ \t]*\n((?:\|.*\|[ \t]*(?:\n|$))*)/gm,
+            function(m, head, body) {
+                if (forPaste) return '\n\nBOUDICATABLE' + (preBlocks.push('\n\n' + m.replace(/\s+$/, '') + '\n\n') - 1) + '\n\n';
+                const cells = (row) => row.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+                const th = cells(head).map(c => '<th>' + c + '</th>').join('');
+                const rows = body.split('\n').filter(r => r.trim()).map(r =>
+                    '<tr>' + cells(r).map(c => '<td>' + c + '</td>').join('') + '</tr>').join('');
+                return '\n\n<table border="1" cellpadding="4" style="border-collapse: collapse;"><thead><tr>' + th +
+                       '</tr></thead><tbody>' + rows + '</tbody></table>\n\n';
+            });
+
          // Blockquotes
         html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
 
@@ -2966,6 +3000,8 @@
         html = html.replace(/(<\/blockquote>)<\/p>/g, '$1');
         html = html.replace(/<p><hr><\/p>/g, '<hr>');
         html = html.replace(/<p><hr>/g, '<hr><p>');
+        html = html.replace(/<p>(<table[\s\S]*?<\/table>)<\/p>/g, '$1');
+        html = html.replace(/(?:<p>)?BOUDICA(?:PRE|TABLE)(\d+)(?:<\/p>)?/g, (m, n) => preBlocks[Number(n)] || '');
 
         return html;
     }  //end renderMarkdown      
