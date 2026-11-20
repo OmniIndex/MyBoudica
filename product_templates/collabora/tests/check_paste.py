@@ -64,12 +64,18 @@ def main():
     if any(l.lstrip().startswith(('- ', '* ', '1. ')) for l in lines):
         problems.append('a list arrived as "- item" / "1. item" text')
 
+    # AI text marker (EU AI Act Art. 50(2)): U+2063, 16 bits of 0xB0DA
+    # (U+200B = 0, U+2060 = 1), U+2063 must reach the document intact.
+    mark = '\u2063' + ''.join('\u2060' if (0xB0DA >> b) & 1 else '\u200b' for b in range(15, -1, -1)) + '\u2063'
+    if mark not in xml:
+        problems.append('the AI text marker did not reach the document')
+
     if problems:
         print('PASTE CHECK FAILED:')
         for p in problems:
             print('  - ' + p)
         sys.exit(1)
-    print('paste check passed: 2 tables, drawn diagram intact, 6 headings, lists real')
+    print('paste check passed: 2 tables, drawn diagram intact, 6 headings, lists real, AI marker kept')
 
 
 if __name__ == '__main__':

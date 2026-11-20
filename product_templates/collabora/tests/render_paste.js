@@ -12,4 +12,14 @@ if (start < 0 || end < 0) {
 }
 eval(src.slice(start, end + 1));
 if (renderMarkdown.length < 1) process.exit(2);
-fs.writeFileSync(output, renderMarkdown(fs.readFileSync(input, 'utf8'), true));
+// pasteMarkdown() adds the AI text marker (EU AI Act Art. 50(2), 2026-11-20)
+// to everything it pastes into a text document: apply it here too, so the
+// check sees the real paste and proves the marker survives the import.
+const mStart = src.search(/\n\s*const AI_TEXT_MARK = /);
+const mEnd = src.indexOf('}  //end aiMarkMarkdown', mStart);
+if (mStart < 0 || mEnd < 0) {
+    console.error('aiMarkMarkdown not found in ' + widget + ' (was it renamed?)');
+    process.exit(2);
+}
+eval(src.slice(mStart, mEnd + 1).replace('const AI_TEXT_MARK', 'var AI_TEXT_MARK'));
+fs.writeFileSync(output, aiMarkMarkdown(renderMarkdown(fs.readFileSync(input, 'utf8'), true)));

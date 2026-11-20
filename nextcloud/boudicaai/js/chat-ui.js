@@ -341,6 +341,8 @@ class ChatUI {
                     this.handleListen(messageDiv, actionBtn);
                 } else if (action === 'copy') {
                     this.handleCopyMessage(messageId, actionBtn);
+                } else if (action === 'report-picture') {
+                    this.handleReportPicture(messageDiv, actionBtn);
                 } else if (action === 'rate') {
                     console.log('Calling handleRateMessage');
                     this.handleRateMessage(messageId, actionBtn);
@@ -1008,7 +1010,7 @@ class ChatUI {
         if (typeof marked !== 'undefined') {
             try {
                 // Use marked to parse markdown
-                const html = marked.parse(content);
+                const html = this.addPictureReportButtons(marked.parse(content));
                 return {
                     html: html,
                     type: 'markdown'
@@ -1989,6 +1991,39 @@ class ChatUI {
     /**
      * Submit rating to backend
      */
+    // "Report picture" under a generated picture (2026-11-20, EU AI Act
+    // Art. 5(1a): reported misuse is corrected). Sends "report #<audit id>
+    // image" like a rating; the server flags the answer for an administrator
+    // (Security Risk Alerts), only when it is this user's own answer.
+    addPictureReportButtons(html) {
+        return html.replace(/(<img\b[^>]*\bsrc="[^"]*\/generated\/[0-9a-f]+\.png"[^>]*>)/g,
+            '$1<br><button type="button" class="btn-message-action report-picture-btn" data-action="report-picture" '
+            + 'title="Report this picture to an administrator">Report picture</button>');
+    }
+
+    async handleReportPicture(messageDiv, btn) {
+        const auditId = messageDiv.getAttribute('data-audit-id');
+        if (!auditId || auditId === 'null') {
+            this.showToast('Please wait until the answer is finished.', 'error');
+            return;
+        }
+        const chatId = this.currentChatId || this.storage.getCurrentChatId();
+        if (!chatId) return;
+        btn.disabled = true;
+        try {
+            const response = await this.api.sendMessage(chatId,
+                { role: 'user', content: `report #${auditId} image`, timestamp: new Date().toISOString() }, null, null);
+            const ok = response && response.content && !/could not be found/i.test(response.content);
+            this.showToast(ok ? 'Thank you. The picture has been reported for review.'
+                              : 'The picture could not be reported.', ok ? 'success' : 'error');
+            if (ok) btn.textContent = 'Reported';
+            else btn.disabled = false;
+        } catch (e) {
+            btn.disabled = false;
+            this.showToast('The picture could not be reported.', 'error');
+        }
+    }
+
     async submitRating(auditId, rating, messageId) {
         console.log('submitRating called:', { auditId, rating, messageId });
         try {

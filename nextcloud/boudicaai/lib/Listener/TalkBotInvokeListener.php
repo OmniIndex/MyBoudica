@@ -224,7 +224,7 @@ class TalkBotInvokeListener implements IEventListener {
             $reply = "Sorry, I couldn't generate a response right now.";
         }
 
-        $event->addAnswer($reply);
+        $event->addAnswer($this->aiMark($reply));
     }
 
     /**
@@ -264,7 +264,7 @@ class TalkBotInvokeListener implements IEventListener {
             $event->addAnswer('Flows from Talk are not switched on for this site yet (an administrator sets the Talk token).');
             return;
         }
-        $event->addAnswer($reply);
+        $event->addAnswer($this->aiMark($reply));
     }
 
     private function handleListFlows(Event $event, array $message): void {
@@ -289,6 +289,57 @@ class TalkBotInvokeListener implements IEventListener {
         }
         $lines = array_map(fn($a) => '- @' . $a['agent_name'] . (($a['display_name'] ?? '') !== '' && $a['display_name'] !== $a['agent_name'] ? ' (' . $a['display_name'] . ')' : ''), $flows);
         $event->addAnswer("Flows you can run here (write @boudica @name and what it needs):\n" . implode("\n", array_slice($lines, 0, 30)));
+    }
+
+    /**
+     * AI-generated text marker (EU AI Act Art. 50(2), 2026-11-20): the same
+     * invisible signature the chat UIs and the Collabora widget add
+     * (src/ai_text_mark.hpp, /api/boudica/detect): U+2063, 16 bits of 0xB0DA
+     * (U+200B = 0, U+2060 = 1), U+2063 - after a sentence end in prose, at most
+     * one per 300 characters, never inside code. Used on Boudica's own answers.
+     */
+    private function aiMark(string $text): string {
+        static $mark = null;
+        if ($mark === null) {
+            $mark = "\u{2063}";
+            for ($b = 15; $b >= 0; $b--) {
+                $mark .= ((0xB0DA >> $b) & 1) ? "\u{2060}" : "\u{200B}";
+            }
+            $mark .= "\u{2063}";
+        }
+        $parts = preg_split('/(```[\s\S]*?```|`[^`\n]*`)/u', $text, -1, PREG_SPLIT_DELIM_CAPTURE);
+        if ($parts === false) {
+            return $text;
+        }
+        $since = 300;   // so the first sentence end is marked
+        for ($i = 0; $i < count($parts); $i += 2) {
+            $lines = explode("\n", $parts[$i]);
+            foreach ($lines as $k => $line) {
+                if (preg_match('/^\s*(\||#)|^( {4}|\t)/u', $line)) {
+                    continue;
+                }
+                if (!preg_match_all('/[.!?;:](?=\s|$)|[。！？]/u', $line, $m, PREG_OFFSET_CAPTURE)) {
+                    $since += strlen($line);
+                    continue;
+                }
+                $out = '';
+                $last = 0;
+                foreach ($m[0] as $hit) {
+                    $pos = $hit[1] + strlen($hit[0]);
+                    if ($since + $pos - $last >= 300) {
+                        $out .= substr($line, $last, $pos - $last) . $mark;
+                        $since = 0;
+                        $last = $pos;
+                    }
+                }
+                $since += strlen($line) - $last;
+                if ($last > 0) {
+                    $lines[$k] = $out . substr($line, $last);
+                }
+            }
+            $parts[$i] = implode("\n", $lines);
+        }
+        return implode('', $parts);
     }
 
     private function logMessage(string $token, ?string $messageId, string $actorName, string $message, bool $isSystem): void {
@@ -401,7 +452,7 @@ class TalkBotInvokeListener implements IEventListener {
             $summary = "Sorry, I couldn't generate a summary right now.";
         }
 
-        $event->addAnswer($summary);
+        $event->addAnswer($this->aiMark($summary));
 
         $this->checkForMeetingRequest($event, $summary, $token);
     }
@@ -447,7 +498,7 @@ class TalkBotInvokeListener implements IEventListener {
                 $reply = "Sorry, I couldn't summarize your calendar events.";
             }
 
-            $event->addAnswer($reply);
+            $event->addAnswer($this->aiMark($reply));
         } catch (\Throwable $e) {
             $this->logger->warning('Boudica calendar search failed: ' . $e->getMessage());
             $event->addAnswer("Sorry, I couldn't retrieve your calendar events.");
@@ -586,7 +637,7 @@ class TalkBotInvokeListener implements IEventListener {
                 $reply = "Sorry, I couldn't summarize your emails.";
             }
 
-            $event->addAnswer($reply);
+            $event->addAnswer($this->aiMark($reply));
         } catch (\Throwable $e) {
             $this->logger->error('Boudica email search failed: ' . $e->getMessage() . ' | Code: ' . $e->getCode() . ' | File: ' . $e->getFile() . ':' . $e->getLine() . ' | Trace: ' . $e->getTraceAsString());
             $event->addAnswer("Sorry, I couldn't retrieve your emails.");
@@ -1056,7 +1107,7 @@ class TalkBotInvokeListener implements IEventListener {
                 ? date('Y-m-d H:i', (int)$callRow['call_started_at']) 
                 : 'Unknown';
 
-            $event->addAnswer("**Call Summary** (from " . $callStartTime . ")\n\n" . $summary);
+            $event->addAnswer("**Call Summary** (from " . $callStartTime . ")\n\n" . $this->aiMark($summary));
 
             $this->checkForMeetingRequest($event, $summary, $token);
 

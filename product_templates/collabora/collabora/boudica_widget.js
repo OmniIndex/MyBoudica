@@ -1945,10 +1945,48 @@
         app.map.focus();
     }
 
+    // ── AI-generated text marker (EU AI Act Art. 50(2), 2026-11-20) ──────────
+    // The same invisible signature the chat UIs put into answers
+    // (chat_interface/scripts/chat-ui.js markAiText; server side
+    // src/ai_text_mark.hpp, /api/boudica/detect): U+2063, 16 bits of 0xB0DA
+    // (U+200B = 0, U+2060 = 1), U+2063. In a document it goes only after a
+    // sentence end in ordinary prose, at most one per 300 characters - never in
+    // code, inline code, HTML tags, table rows or headings, so tables, labels
+    // and copied commands are unchanged. Spreadsheets get none (cell values).
+    const AI_TEXT_MARK = (() => {
+        let m = '⁣';
+        for (let b = 15; b >= 0; b--) m += ((0xB0DA >> b) & 1) ? '⁠' : '​';
+        return m + '⁣';
+    })();
+    function aiMarkMarkdown(text) {
+        if (!text) return text;
+        const parts = String(text).split(/(```[\s\S]*?```|`[^`\n]*`|<[^>\n]*>)/);
+        let since = Infinity;
+        for (let i = 0; i < parts.length; i += 2) {
+            parts[i] = parts[i].split('\n').map(line => {
+                if (/^\s*(\||#)|^( {4}|\t)/.test(line)) return line;
+                const re = /[.!?;:](?=\s|$)|[。！？]/g;
+                let out = '', last = 0, m;
+                while ((m = re.exec(line)) !== null) {
+                    const pos = m.index + 1;
+                    if (since + pos - last >= 300) {
+                        out += line.slice(last, pos) + AI_TEXT_MARK;
+                        since = 0;
+                        last = pos;
+                    }
+                }
+                since += line.length - last;
+                return last ? out + line.slice(last) : line;
+            }).join('\n');
+        }
+        return parts.join('');
+    }  //end aiMarkMarkdown
+
     /** Paste markdown at the editor's cursor. Replaces the selection if there is one; inline, not a new paragraph. */
     function pasteMarkdown(text) {
         const header = "paste mimetype=text/markdown;charset=utf-8\n";
-        app.socket.sendMessage(new Blob([header, text]));
+        const isSheet = app.map.getDocType && app.map.getDocType() === "spreadsheet";
+        app.socket.sendMessage(new Blob([header, isSheet ? text : aiMarkMarkdown(text)]));
     }
 
     // ------------------------------------------------------------------

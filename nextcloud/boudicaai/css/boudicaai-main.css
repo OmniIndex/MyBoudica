@@ -5578,3 +5578,14 @@ body.dark-mode .refused-card-icon {
 @media (max-width: 480px) {
     .refused-card { max-width: 100%; }
 }
+
+/* "Report picture" under a generated picture (2026-11-20, chat-ui.js
+   addPictureReportButtons()). */
+.report-picture-btn {
+    margin-top: 6px;
+    font-size: 0.8em;
+}
+.report-picture-btn:disabled {
+    opacity: 0.7;
+    cursor: default;
+}
