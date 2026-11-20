@@ -1991,13 +1991,17 @@ class ChatUI {
     /**
      * Submit rating to backend
      */
-    // "Report picture" under a generated picture (2026-11-20, EU AI Act
-    // Art. 5(1a): reported misuse is corrected). Sends "report #<audit id>
-    // image" like a rating; the server flags the answer for an administrator
-    // (Security Risk Alerts), only when it is this user's own answer.
+    // Under every generated picture (2026-11-20):
+    //  - a visible "AI-generated picture" caption (EU AI Act Art. 50(4): a
+    //    picture that looks like a real person must say it is AI-made; the
+    //    file itself also carries a watermark and C2PA, Art. 50(2)), and
+    //  - "Report picture" (Art. 5(1a): reported misuse is corrected). It sends
+    //    "report #<audit id> image" like a rating; the server flags the answer
+    //    for an administrator (Security Risk Alerts), only this user's own.
     addPictureReportButtons(html) {
         return html.replace(/(<img\b[^>]*\bsrc="[^"]*\/generated\/[0-9a-f]+\.png"[^>]*>)/g,
-            '$1<br><button type="button" class="btn-message-action report-picture-btn" data-action="report-picture" '
+            '$1<span class="ai-picture-caption">AI-generated picture</span>'
+            + '<button type="button" class="btn-message-action report-picture-btn" data-action="report-picture" '
             + 'title="Report this picture to an administrator">Report picture</button>');
     }
 
