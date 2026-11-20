@@ -5542,3 +5542,39 @@ body.dark-mode {
     }
 }
 
+
+/* Refused picture request (2026-11-20, chat-ui.js renderRefusalBlocks()):
+   a card in the picture's place, crossed-out picture + the message as text. */
+.refused-card {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    max-width: 420px;
+    margin: 6px 0;
+    padding: 14px 16px;
+    border: 2px dashed #c9cdd4;
+    border-radius: 12px;
+    background: #f6f7f9;
+    color: #3c4043;
+}
+.refused-card-icon {
+    flex: 0 0 48px;
+    width: 48px;
+    height: 48px;
+    color: #b3261e;
+}
+.refused-card-text {
+    font-size: 0.95em;
+    line-height: 1.45;
+}
+body.dark-mode .refused-card {
+    border-color: #5f6368;
+    background: #26283a;
+    color: #e8eaed;
+}
+body.dark-mode .refused-card-icon {
+    color: #f28b82;
+}
+@media (max-width: 480px) {
+    .refused-card { max-width: 100%; }
+}

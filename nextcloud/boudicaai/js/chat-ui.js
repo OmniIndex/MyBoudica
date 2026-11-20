@@ -1002,6 +1002,7 @@ class ChatUI {
         // sanitized before ever reaching the DOM.
         content = this.renderChartBlocks(content);
         content = this.sanitizeInlineSvg(content);
+        content = this.renderRefusalBlocks(content);
 
         // Content is Markdown - parse and render
         if (typeof marked !== 'undefined') {
@@ -1130,6 +1131,23 @@ class ChatUI {
      * match) so any markdown before/after/between multiple chart blocks
      * still parses as one coherent document through marked afterward.
      */
+    // ```refused-image blocks (chat-api.js refusalBlock(), 2026-11-20): a
+    // refused picture request is shown as a card where the picture would have
+    // been - a crossed-out picture and the message as real text (readable by
+    // screen readers, copyable, in the reader's language).
+    renderRefusalBlocks(content) {
+        return content.replace(/```refused-image[ \t]*\n([\s\S]*?)```/g, (m, text) => {
+            const msg = this.escapeHtml(text.trim()).replace(/\n+/g, '<br>');
+            return '\n\n<div class="refused-card" role="note">'
+                + '<svg class="refused-card-icon" viewBox="0 0 48 48" aria-hidden="true" focusable="false">'
+                + '<rect x="6" y="9" width="36" height="30" rx="4" fill="none" stroke="currentColor" stroke-width="3"/>'
+                + '<circle cx="17" cy="19" r="3.5" fill="currentColor"/>'
+                + '<path d="M9 35l10-11 7 7 5-5 8 9" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>'
+                + '<line x1="5" y1="43" x2="43" y2="5" stroke="currentColor" stroke-width="3.5" stroke-linecap="round"/>'
+                + '</svg><div class="refused-card-text">' + msg + '</div></div>\n\n';
+        });
+    }
+
     renderChartBlocks(content) {
         // Accepts ANY fence language tag (or none) - confirmed live
         // 2026-08-29 that the model doesn't reliably use the ```chart tag

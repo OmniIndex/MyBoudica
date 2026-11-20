@@ -107,6 +107,16 @@ class ChatAPI {
     /**
      * Strip <|channel>thought, <thought>…</thought>, and <channel|> markers from model output.
      */
+    // A refused picture request (server field "refused", 2026-11-20) becomes a
+    // ```refused-image block, which chat-ui.js's formatMessageContent() shows
+    // as a card in the picture's place. Kept in the message text so the card
+    // also comes back from saved chat history.
+    refusalBlock(text, kind) {
+        const k = String(kind || '').toLowerCase().replace(/[^a-z]/g, '');
+        const t = String(text || '').replace(/`{3,}/g, '``').trim();
+        return k ? '```refused-' + k + '\n' + t + '\n```' : t;
+    }
+
     stripChannelThought(text) {
         // Format 1: XML-style paired tags  <thought>…</thought>  <thinking>…</thinking>
         // (case-insensitive, non-greedy, dotAll so newlines are matched)
@@ -348,7 +358,8 @@ class ChatAPI {
 
             return {
                 role: 'assistant',
-                content: this.stripChannelThought(data.response || data.text || ''),
+                content: data.refused ? this.refusalBlock(data.response, data.refused)
+                                      : this.stripChannelThought(data.response || data.text || ''),
                 thinking: data.thinking || null,
                 metadata: {
                     tokens: data.tokens_generated || 0,
@@ -503,7 +514,8 @@ class ChatAPI {
 
         return {
             role: 'assistant',
-            content: this.stripChannelThought(data.response || data.text || ''),
+            content: data.refused ? this.refusalBlock(data.response, data.refused)
+                                  : this.stripChannelThought(data.response || data.text || ''),
             metadata: {
                 tokens: data.tokens_generated || 0,
                 time: data.processing_time_ms ? data.processing_time_ms / 1000 : 0,
@@ -869,6 +881,7 @@ class ChatAPI {
                                 // Fallback: use final response if no memory note and content differs
                                 fullContent = chunk.response;
                             }
+                            if (chunk.refused) fullContent = this.refusalBlock(chunk.response, chunk.refused);
                             tokensGenerated = chunk.tokens_generated || tokensGenerated;
                             if (chunk.thinking) thinking = chunk.thinking;
                             // Signal completion with audit_id
@@ -951,6 +964,7 @@ class ChatAPI {
                         } else if (chunk.response !== fullContent) {
                             fullContent = chunk.response;
                         }
+                        if (chunk.refused) fullContent = this.refusalBlock(chunk.response, chunk.refused);
                         tokensGenerated = chunk.tokens_generated || tokensGenerated;
                         if (chunk.thinking) thinking = chunk.thinking;
                     }
