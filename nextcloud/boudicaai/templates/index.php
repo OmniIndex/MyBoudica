@@ -386,7 +386,7 @@ Util::addStyle(OCA\BoudicaAi\AppInfo\Application::APP_ID, 'boudicaai-main');
                             <input type="checkbox" id="verbatimCheckbox" />
                             <span class="private-label">Verbatim</span>
                         </label>
-                        <input type="file" id="fileInput" accept=".txt,.pdf,.docx,.doc,.xlsx,.xls,.csv,.pptx,.ppt,.odt,.ods,.odp,.rtf,.md,.log,.json,.xml,.html,.jpg,.jpeg,.png,.gif,.webp" style="display:none" multiple />
+                        <input type="file" id="fileInput" accept=".txt,.pdf,.docx,.doc,.xlsx,.xls,.csv,.pptx,.ppt,.odt,.ods,.odp,.rtf,.md,.log,.json,.xml,.html,.jpg,.jpeg,.png,.gif,.webp,.mp3,.wav,.ogg,.opus,.flac,.m4a,.webm" style="display:none" multiple />
                         <button id="attachBtn" class="btn btn-icon" title="Attach documents">
                             <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
                                 <path d="M16.5 10.5L10.5 16.5C8.567 18.433 5.433 18.433 3.5 16.5C1.567 14.567 1.567 11.433 3.5 9.5L9.5 3.5C10.881 2.119 13.119 2.119 14.5 3.5C15.881 4.881 15.881 7.119 14.5 8.5L8.5 14.5C7.81 15.19 6.69 15.19 6 14.5C5.31 13.81 5.31 12.69 6 12L11.5 6.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>

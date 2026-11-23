@@ -1020,6 +1020,18 @@
         }
 
 
+        // A widget shortcut (find, insert response) answers in the widget and
+        // never calls Boudica, so it may only fire when the whole message IS
+        // that command: short, with the command word near the start. Checking
+        // for the word anywhere swallowed real requests - a pasted use case
+        // that said "easier to find and present" became a highlight of its
+        // first quoted phrase and no document was made (2026-11-23).
+        function isShortCommand(message, commandRegex) {
+            const words = message.trim().split(/\s+/);
+            if (words.length > 15) return false;
+            return commandRegex.test(words.slice(0, 5).join(' '));
+        }
+
         function extractFindTerm(message) {
             // Quoted text is unambiguous — always wins
             const quoted = message.match(/["']([^"']+)["']/);
@@ -1193,7 +1205,7 @@
 
             //Is this a find and replace request? If so we need to handle it differently as we need to get the selected text and then replace it with the new text.
             const findRegex = /\bfind\b/i;
-            if (findRegex.test(message)) {
+            if (isShortCommand(message, findRegex)) {
                 const searchTerm = extractFindTerm(message);
                 if (searchTerm) {
                     app.searchService.highlightAll(searchTerm);
@@ -1213,7 +1225,7 @@
                 //const insert_regex = /\b(insert)\s+?.*?(response|answer)\b/gi;
                 //const insert_matches = message.match(insert_regex);
                 const insertRegex = /\b(insert)\s+?.*?(response|answer)\b/gi;
-                if (insertRegex.test(message)) {
+                if (isShortCommand(message, /\binsert\b/i) && insertRegex.test(message)) {
                     const insertThisRegex = /\b(insert)\s+?.*?(this)\s+?.*?(response|answer)\b/gi;
                     if (insertThisRegex.test(message)) {
                         updateStreamingBubble(assistantBubble, "I will insert this response in to your document");

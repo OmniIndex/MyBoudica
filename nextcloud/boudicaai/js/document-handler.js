@@ -27,7 +27,7 @@ class DocumentHandler {
             'pptx', 'ppt',
             'odt', 'ods', 'odp',
             'rtf', 'cpp','c++','h','hpp','cu','java','js','py','rb','go','rs','swift','kt','php',
-            'json', 'xml', 'html', 'htm','wav','mp3','mp4','avi','mov','mkv','m4a','flac','ogg','webm',
+            'json', 'xml', 'html', 'htm','wav','mp3','mp4','avi','mov','mkv','m4a','flac','ogg','opus','webm',
             // Images — sent as base64 to vision model, not OCR'd
             'jpg', 'jpeg', 'png', 'gif', 'webp'
         ];
