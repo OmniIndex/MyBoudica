@@ -2972,6 +2972,15 @@
             const keep = (m) => '\n\nBOUDICAKEEP' + (blocks.push(m.replace(/^\n+|\s+$/g, '')) - 1) + '\n\n';
             let t = text.replace(/```[^\n]*\n[\s\S]*?```/g, keep);
             t = t.replace(/^\|.*\|[ \t]*\n\|?[ \t]*:?-{2,}:?[ \t]*(?:\|[ \t]*:?-{2,}:?[ \t]*)*\|?[ \t]*\n(?:\|.*\|[ \t]*(?:\n|$))*/gm, keep);
+            // Lists stay markdown too (2026-11-23): the HTML step below only
+            // knows items at the start of a line, so a nested item ("1. **Area**"
+            // then "   - point") reached the document as body text with a literal
+            // "- ", several points joined into one paragraph. Collabora's own
+            // import nests them correctly. A list with a generated picture keeps
+            // the HTML step, which must be the only fetch of that picture.
+            const ITEM = '[ \\t]*(?:[-*+]|\\d{1,3}[.)])[ \\t]+\\S.*';
+            t = t.replace(new RegExp('^' + ITEM + '(?:\\n(?:[ \\t]*\\n)*(?:' + ITEM + '|[ \\t]{2,}\\S.*))*', 'gm'),
+                (m) => m.includes('](/generated/') ? m : keep(m));
             return t.split(/\n\nBOUDICAKEEP(\d+)\n\n/)
                 .map((seg, i) => {
                     if (i % 2) return blocks[Number(seg)];

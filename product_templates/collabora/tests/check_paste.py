@@ -25,6 +25,22 @@ def para_texts(xml):
     return out
 
 
+def list_depth(xml, needle):
+    """How many lists the first paragraph containing needle sits inside (0 = none, None = not found)."""
+    depth = 0
+    # (?<!/)> skips empty self-closing paragraphs, which would otherwise swallow
+    # the list tags up to the next paragraph's end.
+    for m in re.finditer(r'<text:list[ >]|</text:list>|<text:(p|h)\b[^>]*(?<!/)>(.*?)</text:\1>', xml, re.S):
+        t = m.group(0)
+        if t.startswith('<text:list'):
+            depth += 1
+        elif t == '</text:list>':
+            depth -= 1
+        elif needle in re.sub(r'<[^>]+>', '', m.group(2)):
+            return depth
+    return None
+
+
 def main():
     xml = zipfile.ZipFile(sys.argv[1]).read('content.xml').decode('utf-8')
     texts = para_texts(xml)
@@ -63,6 +79,15 @@ def main():
             problems.append(f'list item missing: {item!r}')
     if any(l.lstrip().startswith(('- ', '* ', '1. ')) for l in lines):
         problems.append('a list arrived as "- item" / "1. item" text')
+    # Nested lists (2026-11-23): the model writes "1. **Area**" with indented
+    # "   - point" lines under it; those points reached the document as body
+    # text starting "- ", several joined into one paragraph.
+    for item, want in [('Knowledge Access', 1), ('Answers from the lab', 2), ('Shows the bibliography', 2),
+                       ('Maker Space', 1), ('Projects, such as', 2), ('A dress with Arduino lights', 3),
+                       ('Audio-guided mouse training', 3), ('Room to experiment', 2)]:
+        got = list_depth(xml, item)
+        if got != want:
+            problems.append(f'nested list item {item!r} at list depth {got}, expected {want}')
 
     # AI text marker (EU AI Act Art. 50(2)): U+2063, 16 bits of 0xB0DA
     # (U+200B = 0, U+2060 = 1), U+2063 must reach the document intact.
@@ -75,7 +100,7 @@ def main():
         for p in problems:
             print('  - ' + p)
         sys.exit(1)
-    print('paste check passed: 2 tables, drawn diagram intact, 6 headings, lists real, AI marker kept')
+    print('paste check passed: 2 tables, drawn diagram intact, 6 headings, lists real (nested too), AI marker kept')
 
 
 if __name__ == '__main__':

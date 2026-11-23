@@ -20,6 +20,16 @@ This document has **bold words**, *italic words* and every shape a model writes.
 - First bullet point
 - Second bullet point
 
+1. **Knowledge Access**  
+   - Answers from the lab's own collection.  
+   - Shows the bibliography.
+
+2. **Maker Space**  
+   - Projects, such as:  
+     - A dress with Arduino lights.
+     - Audio-guided mouse training.
+   - Room to experiment.
+
 ## Drawn Diagram
 
 ```
