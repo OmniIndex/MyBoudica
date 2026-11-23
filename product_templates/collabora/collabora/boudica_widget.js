@@ -2259,6 +2259,7 @@
     function documentWrittenMessage(text) {
         const chars = (text || '').length.toLocaleString();
         let msg = `\u2713 Done \u2013 written into your document (${chars} characters).`;
+        if (documentKbNote) msg += '\n\n*' + documentKbNote + '*';
         if (lastAnswerTruncated) {
             msg += '\n\n**Note:** the answer reached its length limit and stops part-way. ' +
                    'Switch to Document Mode for a longer limit and send the request again.';
@@ -2407,6 +2408,14 @@
     // (calling it here threw and silently dropped every figure, 2026-11-18).
     async function writeDocumentWithFigures(text, message, showStatus) {
         const truncated = lastAnswerTruncated;   // following the job resets it
+        // The knowledge-base note goes to the chat bubble (documentWrittenMessage),
+        // not into the document; read before the figures job resets it.
+        documentKbNote = '';
+        const kbNote = lastKbMissNote.trim();
+        if (kbNote && text.trimStart().startsWith(kbNote)) {
+            text = text.trimStart().slice(kbNote.length).replace(/^\s+/, '');
+            documentKbNote = kbNote.replace(/[:\uFF1A]\s*$/, '');
+        }
         let figures = [];
         let note = '';
         const pictures = wantsPictures(message);
@@ -2487,6 +2496,12 @@
     // Set by callBoudicaAPI from the server's final line: the answer stopped at
     // the length limit (finish_reason "length"), so a written document ends part-way.
     let lastAnswerTruncated = false;
+    // Set by callBoudicaAPI from the server's final line (kb_miss_note): the
+    // sentence the engine puts in front of an answer that did not come from the
+    // knowledge base, in the question's language. It belongs in the chat, not in
+    // a written document (2026-11-23: it became the document's first paragraph).
+    let lastKbMissNote = '';
+    let documentKbNote = '';   // the note taken out of the last written document
 
     function pendingJobKey() {
         let doc = '';
@@ -2553,6 +2568,7 @@
         let fullContent = '';
         let jobId = resumeJobId;
         lastAnswerTruncated = false;
+        lastKbMissNote = '';
         // Feedback while the server only sends keepalives: the waiting words
         // until it reports a status, then that status with the time it has
         // been working ("Checking the answer…" can take minutes).
@@ -2615,6 +2631,7 @@
                 onStream(stripChannelMarkers(fullContent));
             }
             if (chunk.truncated === true || chunk.finish_reason === 'length') lastAnswerTruncated = true;
+            if (chunk.kb_miss === true && chunk.kb_miss_note) lastKbMissNote = String(chunk.kb_miss_note);
             if (chunk.response !== undefined && chunk.response !== '') {
                 fullContent = chunk.response;
                 onStream(stripChannelMarkers(fullContent));
