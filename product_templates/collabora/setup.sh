@@ -694,11 +694,21 @@ if [[ -n "$SMTP_RELAYHOST" ]]; then
     docker compose exec -u www-data -T nextcloud php occ config:system:set mail_smtpstreamoptions ssl verify_peer_name --value=false --type=boolean
 fi
 
-# richdocuments (Collabora integration, bundled by default - unlike Talk,
-# no separate app:install needed) derives its default wopi_url from
+# richdocuments (Collabora integration) is NOT bundled with Nextcloud 34 -
+# like Talk it comes from the app store; without it documents only download
+# (found on a fresh LabXR install 2026-11-24). The first try can fail with
+# "not found on the appstore" while Nextcloud is still fetching the store
+# list, so retry. It derives its default wopi_url from
 # overwritehost/overwrite.cli.url at install time - confirmed live it
 # picked up a port-less value despite those being set correctly, so set it
 # explicitly here rather than trust the derived default.
+for _try in 1 2 3 4 5; do
+    docker compose exec -u www-data -T nextcloud php occ app:list --output=json 2>/dev/null \
+        | grep -q '"richdocuments"' && break
+    docker compose exec -u www-data -T nextcloud php occ app:install richdocuments \
+        || docker compose exec -u www-data -T nextcloud php occ app:enable richdocuments \
+        || sleep 10
+done
 docker compose exec -u www-data -T nextcloud php occ config:app:set richdocuments wopi_url \
     --value="https://${BOUDICA_DOMAIN}:${BOUDICA_HTTPS_PORT}"
 docker compose exec -u www-data -T nextcloud php occ richdocuments:activate-config || true
