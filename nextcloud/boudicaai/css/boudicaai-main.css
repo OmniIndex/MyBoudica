@@ -5601,3 +5601,52 @@ body.dark-mode .refused-card-icon {
     font-style: italic;
     color: var(--text-secondary, #5f6368);
 }
+
+/* ── Memory dialog (2026-11-25, memory-ui.js) ─────────────────────────────
+   Built on .services-overlay like the Knowledge Base and Connected Services
+   dialogs; only the list inside is new. */
+.memory-overlay-panel { width: clamp(360px, 56vw, 760px); max-height: 80vh; }
+.memory-overlay-panel .services-overlay-body { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
+.memory-intro { margin: 0; font-size: var(--font-size-sm, 14px); color: var(--text-secondary); }
+.memory-toolbar { display: flex; flex-direction: column; gap: 8px; }
+.memory-search {
+    width: 100%; box-sizing: border-box; padding: 8px 10px; font-size: var(--font-size-sm, 14px);
+    border: 1px solid var(--border-color); border-radius: var(--radius-md, 8px);
+    background: var(--background-color); color: var(--text-primary);
+}
+.memory-filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.memory-filter {
+    padding: 4px 10px; font-size: var(--font-size-xs, 12px); cursor: pointer;
+    border: 1px solid var(--border-color); border-radius: 999px;
+    background: var(--background-color); color: var(--text-secondary);
+}
+.memory-filter.active { background: var(--primary-light, #e8f0fe); color: var(--primary-color, #4285f4); border-color: var(--primary-color, #4285f4); }
+.memory-status { font-size: var(--font-size-sm, 14px); padding: 8px 10px; border-radius: var(--radius-md, 8px); background: var(--surface-color); color: var(--text-primary); }
+.memory-status.memory-status-error { color: var(--error-color, #d93025); }
+.memory-status.hidden { display: none; }
+.memory-list { display: flex; flex-direction: column; gap: 8px; }
+.memory-item {
+    padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--radius-md, 8px);
+    background: var(--background-color);
+}
+.memory-item-org { background: var(--surface-color); }
+.memory-item-text { font-size: var(--font-size-sm, 14px); color: var(--text-primary); line-height: 1.4; }
+.memory-item-meta { margin-top: 4px; font-size: var(--font-size-xs, 12px); color: var(--text-tertiary); }
+.memory-item-actions { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.memory-item-actions:empty { display: none; }
+.memory-confirm { font-size: var(--font-size-xs, 12px); color: var(--text-secondary); margin-right: 4px; }
+.memory-badge {
+    display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 999px;
+    font-size: 11px; vertical-align: middle; border: 1px solid var(--border-color); color: var(--text-secondary);
+}
+.memory-badge-suggestion { color: var(--primary-color, #4285f4); border-color: var(--primary-color, #4285f4); }
+.memory-badge-waiting { color: var(--warning-color, #f9ab00); border-color: var(--warning-color, #f9ab00); }
+.memory-badge-rejected { color: var(--text-tertiary); }
+.memory-empty { padding: 16px; text-align: center; font-size: var(--font-size-sm, 14px); color: var(--text-secondary); }
+.memory-show-all {
+    align-self: center; background: none; border: none; cursor: pointer;
+    color: var(--primary-color, #4285f4); font-size: var(--font-size-sm, 14px);
+}
+.memory-show-all.hidden { display: none; }
+
+.btn-memory-header { flex-shrink: 0; }

@@ -97,6 +97,7 @@ Util::addScript(OCA\BoudicaAi\AppInfo\Application::APP_ID, 'torc-private-ui');
 Util::addScript(OCA\BoudicaAi\AppInfo\Application::APP_ID, 'app');
 Util::addScript(OCA\BoudicaAi\AppInfo\Application::APP_ID, 'services');
 Util::addScript(OCA\BoudicaAi\AppInfo\Application::APP_ID, 'agents-ui');
+Util::addScript(OCA\BoudicaAi\AppInfo\Application::APP_ID, 'memory-ui');   // 2026-11-25 Memory dialog
 
 Util::addStyle(OCA\BoudicaAi\AppInfo\Application::APP_ID, 'boudicaai-main');
 
@@ -284,6 +285,12 @@ Util::addStyle(OCA\BoudicaAi\AppInfo\Application::APP_ID, 'boudicaai-main');
                         <line x1="9" y1="11" x2="15" y2="11"/>
                     </svg>
                 </button>
+                    <button id="memoryBtn" class="btn btn-icon btn-memory-header" title="Memory">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M9 18h6"/><path d="M10 22h4"/>
+                            <path d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/>
+                        </svg>
+                    </button>
                 <button id="fileManagerBtn" class="btn btn-icon btn-filemanager-header" title="File Manager">
                     <svg width="25" height="25" viewBox="0 0 25 25" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <rect x="3" y="4" width="19" height="15" rx="2"/>
@@ -1284,6 +1291,51 @@ Util::addStyle(OCA\BoudicaAi\AppInfo\Application::APP_ID, 'boudicaai-main');
         </div>
     </div>
 </div>
+
+    <!-- ── Memory Overlay (2026-11-25, scripts/memory-ui.js) ─────────────── -->
+    <div id="memoryOverlay" class="services-overlay hidden" role="dialog" aria-modal="true" aria-label="Memory">
+        <div class="services-overlay-backdrop"></div>
+        <div class="services-overlay-panel memory-overlay-panel">
+            <div class="services-overlay-header">
+                <div class="services-overlay-title-row">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M9 18h6"/><path d="M10 22h4"/>
+                        <path d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/>
+                    </svg>
+                    <h2>Memory</h2>
+                    <span id="memoryCountLabel" class="services-count-label"></span>
+                </div>
+                <div class="services-overlay-header-actions">
+                    <button id="memoryRefreshBtn" class="btn btn-icon" title="Refresh">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
+                            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                        </svg>
+                    </button>
+                    <button id="memoryCloseBtn" class="btn btn-icon" title="Close">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <div class="services-overlay-body">
+                <p class="memory-intro">What Boudica has learnt from you: how you like things done, and things you've told it to remember. Only you can see these, unless you propose one to your organisation and an administrator approves it.</p>
+                <div class="memory-toolbar">
+                    <input type="search" id="memorySearch" class="memory-search" placeholder="Search your memory" autocomplete="off">
+                    <div class="memory-filters" role="group" aria-label="Show">
+                        <button class="memory-filter active" data-filter="all">All</button>
+                        <button class="memory-filter" data-filter="rule">How you like things done</button>
+                        <button class="memory-filter" data-filter="fact">Facts</button>
+                        <button class="memory-filter" data-filter="suggestion">Suggestions</button>
+                    </div>
+                </div>
+                <div id="memoryStatus" class="memory-status hidden" role="status"></div>
+                <div id="memoryList" class="memory-list"></div>
+                <button id="memoryShowAll" class="memory-show-all hidden"></button>
+            </div>
+        </div>
+    </div>
 
 <!-- ── File Manager (non-modal floating window, not an overlay) ────────── -->
 <div id="fileManagerWindow" class="fm-floating-window hidden">
