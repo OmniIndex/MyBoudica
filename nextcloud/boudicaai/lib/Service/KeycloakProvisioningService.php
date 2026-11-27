@@ -63,8 +63,19 @@ class KeycloakProvisioningService {
             return $existing;
         }
 
+        // Key provisioning secret (2026-11-27): Boudica issues keys here only
+        // to a caller that sends it, once its BOUDICA_PROVISION_TOKEN is set
+        // (app config provision_token = the same value, not sensitive). While
+        // it is unset on either side, Boudica accepts a direct internal call
+        // without it, as before.
+        $headers = [];
+        $provisionToken = $this->config->getAppValue('boudicaai', 'provision_token', '');
+        if (strlen($provisionToken) >= 32) {
+            $headers['X-Boudica-Provision-Token'] = $provisionToken;
+        }
         try {
             $response = $this->httpClient->post(self::BETA_SIGNUP_URL, [
+                'headers' => $headers,
                 'json' => [
                     'name' => $name !== '' ? $name : $uid,
                     'email' => $uid,
